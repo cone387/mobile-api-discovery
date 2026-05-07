@@ -1,0 +1,73 @@
+{# 代码生成模板 - 为可复现接口生成 Python requests 代码 #}
+"""
+自动生成的 API 请求代码
+接口: {{ endpoint }}
+用途: {{ purpose }}
+生成时间: {{ generated_at }}
+"""
+
+import requests
+
+
+# === 会话参数（需要用户配置） ===
+# 获取方式: 从浏览器开发者工具或 App 抓包获取
+{% for param in session_params %}
+{{ param.name | upper }} = "{{ param.value }}"  # {{ param.description }}
+{% endfor %}
+{% if not session_params %}
+# 无需配置会话参数
+{% endif %}
+
+
+# === 请求函数 ===
+def fetch_{{ function_name }}({{ function_args }}):
+    """{{ purpose }}
+
+    Endpoint: {{ method | upper }} {{ endpoint }}
+    """
+    url = "{{ url }}"
+
+    headers = {{ headers }}
+{% if query_params %}
+
+    params = {{ query_params }}
+{% endif %}
+{% if body %}
+
+    {% if body_type == "json" %}
+    json_data = {{ body }}
+    {% else %}
+    data = {{ body }}
+    {% endif %}
+{% endif %}
+
+    try:
+        response = requests.{{ method | lower }}(
+            url,
+            headers=headers,
+{% if query_params %}
+            params=params,
+{% endif %}
+{% if body and body_type == "json" %}
+            json=json_data,
+{% elif body %}
+            data=data,
+{% endif %}
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.JSONDecodeError:
+        return response.text
+    except requests.RequestException as e:
+        print(f"请求失败: {e}")
+        return None
+
+
+if __name__ == "__main__":
+    result = fetch_{{ function_name }}({{ main_call_args }})
+    if result is not None:
+        import json
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print("请求失败，请检查会话参数是否有效")
