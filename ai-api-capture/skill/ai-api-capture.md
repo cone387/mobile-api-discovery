@@ -1,7 +1,7 @@
 ---
 name: AI API Capture
-description: AI 驱动的移动端接口抓取与代码生成，通过操控真实移动设备触发 App 行为并自动分析接口可复现性
-version: 1.0.0
+description: AI 驱动的移动端接口抓取与代码生成，通过操控真实移动设备触发 App 行为，自动抓包、过滤、分析接口并生成接口报告
+version: 2.0.0
 keywords:
   - api
   - capture
@@ -13,271 +13,221 @@ keywords:
   - App 接口
   - 移动端抓包
   - 接口采集
+  - 短剧
+  - 数据采集
 dependencies:
   tools:
-    - mitmproxy
+    - mitmproxy (>=10.1.0)
     - mobile-mcp
+    - adb
   python:
-    - requests
-    - httpx
-    - aiohttp
     - mitmproxy
-    - jinja2
-    - aiosqlite
-    - hypothesis
+    - requests
 ---
 
 # AI API Capture Skill
 
 ## 概述
 
-本 skill 封装了 AI 驱动的移动端接口抓取与代码生成的完整流程。通过自然语言指令，AI 代理将自动完成：设备操控触发 App 行为、流量捕获与接口分析、分路径数据采集（代码生成批量抓取 或 客户端回放采集）。
+通过 AI 操控真实移动设备触发 App 行为，利用 mitmproxy 抓取网络请求，自动过滤无关流量，分析业务接口并生成结构化的接口报告。
+
+**核心目标**：以最低逆向成本，快速将 App 接口转化为可用的数据源文档。
 
 ## 触发条件
 
-当用户消息中包含以下关键词或意图时激活本 skill：
+当用户消息中包含以下关键词或意图时激活：
 
-- "抓取接口"、"抓取 API"
-- "App 接口采集"
-- "移动端抓包"
-- "接口逆向"
-- "自动抓包"
-- "批量采集 App 数据"
-- "生成接口代码"
+- "抓取接口"、"抓取 API"、"App 接口"
+- "移动端抓包"、"接口逆向"
+- "采集 App 数据"、"接口报告"
 - "capture API"、"mobile API capture"
 
 ## 输入参数
 
 | 参数名 | 必填 | 说明 | 示例 |
 |--------|------|------|------|
-| app_package | 是 | 目标 App 的包名（Android）或 Bundle ID（iOS） | `com.example.app` |
-| device_id | 是 | 目标设备标识符，可通过 `mobile_list_available_devices` 获取 | `emulator-5554` |
-| operation_intent | 是 | 用户希望触发的操作意图，自然语言描述 | "浏览首页 feed 流并进入详情页" |
-| collection_target | 否 | 具体希望采集的数据类型或接口 | "feed 列表数据和详情内容" |
-| filter_domains | 否 | 需要关注的域名列表，用于过滤无关流量 | `["api.example.com"]` |
-| output_path | 否 | 结果输出目录，默认为 `./output` | `./my_output` |
+| app_package | 是 | 目标 App 包名 | `com.dz.hmjc` |
+| device_id | 是 | 设备标识符 | `127.0.0.1:16384` |
+| operation_intent | 是 | 操作意图描述 | "进入剧场漫剧tab，滑动列表，点击一个短剧进入详情" |
+| target_data | 否 | 期望获取的数据 | "短剧列表+详情+播放量" |
+| filter_domains | 否 | 关注的域名 | `["freevideo.zqqds.cn"]` |
 
 ## 执行流程
 
-### 阶段 1：设备操控与流量捕获
+### 阶段 1：环境准备与抓包启动
 
-**目标**：通过 AI 操控移动设备执行 App 操作，同时捕获所有网络流量。
+1. **检查设备连接**
+   ```
+   mobile_list_available_devices → 确认设备在线
+   ```
 
-**步骤**：
+2. **安装系统级 CA 证书**（如果需要 HTTPS 解密）
+   ```bash
+   # 通过 adb 使用 tmpfs overlay 方式安装到系统证书目录
+   adb shell "su 0 mount -t tmpfs tmpfs /system/etc/security/cacerts"
+   adb shell "cp /data/local/tmp/certs/* /system/etc/security/cacerts/"
+   ```
 
-1. **环境检查**
-   - 确认 mitmproxy 已安装且可用
-   - 确认目标设备已连接且可通过 mobile-mcp 访问
-   - 确认设备已配置代理指向 mitmproxy 监听地址
-   - 确认设备已安装 mitmproxy CA 证书（用于 HTTPS 解密）
+3. **设置设备代理**
+   ```bash
+   adb shell settings put global http_proxy 10.0.2.2:8080
+   ```
 
-2. **启动流量拦截**
-   - 初始化 TrafficInterceptor，加载 capture_addon
-   - 如果用户指定了 filter_domains，配置过滤规则
-   - 开始监听并记录所有经过代理的请求
+4. **启动 mitmdump + 过滤脚本**
+   ```bash
+   mitmdump --set block_global=false -s scripts/capture_to_json.py
+   ```
 
-3. **连接设备并启动 App**
-   - 通过 DeviceController 连接到目标设备
-   - 启动目标 App（使用 app_package 参数）
-   - 等待 App 完全加载
+### 阶段 2：设备操控触发接口
 
-4. **执行操作序列**
-   - 根据 operation_intent 生成操作序列（AI 分析当前屏幕状态并规划操作）
-   - 逐步执行操作：页面导航、按钮点击、列表滑动、详情进入等
-   - 每个步骤执行前更新当前步骤 ID，以便流量关联
-   - 步骤失败时记录错误并继续执行后续步骤
+**操控原则**：
+- 滑动时从屏幕边缘/空白区域起始，避免误触封面进入详情
+- 每次操作后等待 1-2 秒让网络请求完成
+- 按用户指定的操作意图逐步执行
 
-5. **停止捕获**
-   - 操作序列执行完毕后，停止流量拦截
-   - 收集所有捕获的请求-响应对
-
-### 阶段 2：接口分析与分类
-
-**目标**：对捕获的流量进行智能分析，判定每个接口的可复现性。
-
-**步骤**：
-
-1. **流量预处理**
-   - 过滤掉静态资源请求（图片、CSS、JS 等）
-   - 过滤掉已知的 SDK 上报请求（埋点、崩溃上报等）
-   - 按接口路径去重，保留有代表性的请求样本
-
-2. **参数提取与分类**
-   - 从 URL query、headers、body、cookies 中提取所有参数
-   - 对每个参数进行分类：
-     - **静态参数**：多次请求中值不变（如 app_version, platform）
-     - **会话参数**：符合 Token/Cookie 模式（如 Authorization, session_id）
-     - **动态参数**：每次请求值不同且无法预测（如 sign, nonce）
-     - **未知参数**：无法确定分类
-
-3. **可复现性判定**
-   - 仅包含静态参数和会话参数 → 标记为"可复现"
-   - 包含动态签名或加密参数 → 标记为"复杂接口"
-   - 包含未确定参数 → 标记为"待确认"
-
-4. **生成分析报告**
-   - 为每个接口生成分析摘要：用途、参数列表、可复现性判定及依据
-
-> **⏸️ 暂停点 1**：展示接口分类结果，等待用户确认（详见暂停点章节）
-
-### 阶段 3：分路径数据采集
-
-**目标**：根据接口分类结果，选择最优采集策略执行数据采集。
-
-#### 路径 A：可复现接口 → 代码生成 + 批量采集
-
-1. **代码生成**
-   - 为每个可复现接口生成独立的 Python requests 代码
-   - 将会话参数提取为可配置变量
-   - 添加错误处理和响应解析逻辑
-
-2. **代码验证**
-   - 使用原始请求参数执行一次验证请求
-   - 比对响应结构是否一致
-   - 验证失败则降级为复杂接口
-
-> **⏸️ 暂停点 2**：展示待批量采集的接口列表，等待用户确认（详见暂停点章节）
-
-3. **批量采集执行**
-   - 按用户配置的并发数和请求间隔执行批量请求
-   - 监控成功率，连续失败超过阈值时自动暂停
-   - 检测认证失败时暂停并提示用户
-
-#### 路径 B：复杂接口 → 客户端回放采集
-
-1. **生成回放序列**
-   - 从原始操作序列中提取触发目标接口的最小操作子集
-
-> **⏸️ 暂停点 4**：对于复杂接口，展示回放策略并等待用户确认（详见暂停点章节）
-
-2. **执行回放采集**
-   - 通过 DeviceController 按操作序列重复执行 App 操作
-   - TrafficInterceptor 仅捕获目标接口的响应数据
-   - 按配置的轮次和间隔重复执行
-
-3. **结果验证**
-   - 确认每轮执行后是否成功捕获目标请求
-   - 重试一次后仍失败则标记为"采集失败"
-
-### 最终输出
-
-- 汇总报告（Markdown 格式）：总接口数、各分类数量、采集状态
-- 生成的代码文件（output/generated/ 目录）
-- 采集的数据（output/data/ 目录，JSON 格式）
-
-## 暂停点与用户决策交互
-
-在以下关键节点，AI 代理必须暂停执行并等待用户确认：
-
-### 暂停点 1：接口分类结果确认
-
-**触发时机**：阶段 2 完成接口分析后
-
-**展示内容**：
-- 接口分类汇总表（可复现 / 复杂 / 待确认 各多少个）
-- 每个接口的简要信息：路径、用途、分类结果、判定依据
-
-**用户决策选项**：
-- ✅ 确认分类结果，继续执行
-- ✏️ 修改某些接口的分类（用户可手动将"复杂"改为"可复现"或反之）
-- 🔄 对"待确认"接口进行额外分析（再次抓取对比）
-
-**交互格式示例**：
+**典型操作序列**：
 ```
-接口分析完成，共发现 12 个接口：
-- 可复现：8 个
-- 复杂接口：3 个
-- 待确认：1 个
-
-详细列表：
-| # | 路径 | 用途 | 分类 | 依据 |
-|---|------|------|------|------|
-| 1 | /api/feed/list | Feed 流 | 可复现 | 仅含静态+会话参数 |
-| 2 | /api/user/info | 用户信息 | 可复现 | 仅含静态+会话参数 |
-| 3 | /api/sign/data | 签名数据 | 复杂 | 含动态签名参数 sign |
-...
-
-请确认分类结果，或指定需要修改的接口编号。
+1. 启动 App → 等待首页加载（触发首页 list 接口）
+2. 点击目标 tab → 等待加载（触发分类 list 接口）
+3. 从空白区域向上滑动 → 触发分页加载（触发 pagination 接口）
+4. 点击某个内容项 → 进入详情页（触发 detail 接口）
 ```
 
-### 暂停点 2：批量采集确认
+**滑动注意事项**：
+- 使用 `swipe_on_screen(direction="up", distance=800, x=450, y=1290)` 从底部空白区滑动
+- 不要从内容封面中心滑动，否则会触发点击进入详情
 
-**触发时机**：代码生成和验证完成后，批量采集开始前
+### 阶段 3：流量过滤（内置 4 层过滤）
 
-**展示内容**：
-- 验证通过的接口列表
-- 建议的采集配置（并发数、间隔、总量）
-- 预估采集时间
+在抓包阶段就排除无关流量，减少后续分析的数据量和 token 消耗：
 
-**用户决策选项**：
-- ✅ 使用默认配置开始采集
-- ⚙️ 调整采集配置（并发数、间隔、采集量）
-- 🎯 选择部分接口进行采集
-- ⏭️ 跳过批量采集
+**第 1 层：静态资源过滤**
+- 跳过 image/、font/、video/、audio/、text/css、application/javascript
 
-### 暂停点 3：认证失败处理
+**第 2 层：第三方 SDK 域名黑名单**
+```
+# 数据上报/埋点
+analytics.oceanengine.com, sss.umeng.com, tracking.miui.com, sc-sa.*.cn
 
-**触发时机**：批量采集过程中检测到认证失败（401/403）
+# 崩溃上报
+pro.bugly.qq.com, bugly.qq.com
 
-**展示内容**：
-- 失败的接口信息
-- 当前使用的会话参数
-- 失败响应内容摘要
+# 广告
+ad-union.*.cn, pbaccess.video.qq.com, amdcopen.m.taobao.com
 
-**用户决策选项**：
-- 🔑 提供新的会话参数（Token/Cookie）并继续
-- ⏸️ 暂停采集，稍后手动更新
-- ⏭️ 跳过该接口，继续采集其他接口
+# 推送
+gepush.com, sdk-open-phone.getui.com
 
-### 暂停点 4：复杂接口回放策略确认
+# 性能监控
+tingyun.com, wkdcm1.tingyun.com
 
-**触发时机**：对复杂接口生成回放序列后
+# DNS/CDN 探测
+203.107.1.1, cbsipv4.shuzilm.cn
 
-**展示内容**：
-- 目标接口信息
-- 生成的回放操作序列（步骤列表）
-- 建议的采集轮次和间隔
+# 设备指纹/安全
+mssdk, polaris, gecko.zijieapi.com
 
-**用户决策选项**：
-- ✅ 确认回放策略，开始执行
-- ✏️ 修改操作序列或采集配置
-- ⏭️ 跳过该接口
-- 🔄 重新分析该接口（可能需要更多样本）
+# 模拟器自身
+report.mumu.nie.netease.com, api.mumu.nie.netease.com
+```
 
-## 依赖声明
+**第 3 层：路径黑名单**
+```
+/sdk/app/, /reportBatchData, /upload-json, /api/v2/al,
+/api/v1/attribute, /api/collection, /getMobileRedirectHost,
+/initMobileApp, /track/v4
+```
 
-### 外部工具
+**第 4 层：业务 API 白名单**
+- 只保留 Content-Type 含 "json" 的响应
+- 或 URL 路径含 /api/、/v1/、/v2/、/portal/ 等已知 API 模式
 
-| 工具 | 版本要求 | 用途 | 安装方式 |
-|------|----------|------|----------|
-| mitmproxy | ≥ 10.1.0 | HTTPS 流量拦截与解密 | `pip install mitmproxy` 或 `brew install mitmproxy` |
-| mobile-mcp | 最新版 | 移动设备操控（MCP 协议） | 参考 mobile-mcp 文档配置 MCP 服务器 |
-| Android/iOS 设备 | - | 运行目标 App 的真实设备或模拟器 | 需配置 USB 调试或网络连接 |
+### 阶段 4：接口分析与报告生成
 
-### Python 依赖
+**接口识别逻辑**（基于响应结构，不是猜测）：
 
-| 包名 | 版本要求 | 用途 |
-|------|----------|------|
-| requests | ≥ 2.31.0 | 同步 HTTP 客户端，用于代码生成和验证 |
-| httpx | ≥ 0.25.0 | 现代 HTTP 客户端，支持 HTTP/2 |
-| aiohttp | ≥ 3.9.0 | 异步 HTTP 客户端，用于批量并发采集 |
-| mitmproxy | ≥ 10.1.0 | 流量拦截代理的 Python API |
-| jinja2 | ≥ 3.1.0 | 代码生成模板引擎 |
-| aiosqlite | ≥ 0.19.0 | 异步 SQLite，用于索引和元数据存储 |
-| hypothesis | ≥ 6.92.0 | 属性测试框架（开发依赖） |
+| 响应特征 | 接口类型 |
+|----------|----------|
+| 响应含 `dataList` / `list` 数组 | LIST（列表接口） |
+| 响应含 `hasMore` + `pageFlag` | LIST + 分页 |
+| 响应含 `chapterList` / `episodeList` | DETAIL（详情，含剧集列表） |
+| 响应含 `mp4Url` / `videoUrl` / `playUrl` | PLAY（播放接口） |
+| 响应含 `commentNum` / `result` 简单值 | AUX（辅助接口，非核心） |
+| 响应含 `config` / `settings` | CONFIG（配置接口） |
 
-### 环境配置要求
+**数据链路自动识别**：
+- 分析 list 接口响应中的 ID 字段（如 bookId）
+- 检查 detail 接口请求中是否使用了该 ID
+- 自动建立 list → detail → play 的调用链
 
-1. **Python 环境**：Python 3.11 或更高版本
-2. **设备代理配置**：目标设备的 Wi-Fi 代理需指向运行 mitmproxy 的主机 IP 和端口（默认 8080）
-3. **CA 证书安装**：目标设备需安装 mitmproxy 的 CA 证书以解密 HTTPS 流量
-4. **MCP 服务器**：需启动 mobile-mcp 服务器并确保 AI 代理可访问
-5. **设备连接**：Android 设备需开启 USB 调试或通过 ADB over Wi-Fi 连接；iOS 设备需通过 Xcode 或相关工具连接
+**参数分类**：
+
+| 类型 | 判断规则 |
+|------|----------|
+| 静态 | version, pname, os, brand, model, channelCode |
+| 会话 | token, userId, session, uid |
+| 动态 | sign, nonce, timestamp, boxId（每次请求值不同） |
+
+**签名机制识别**：
+- 如果请求头有 `sign` + `nonce` + `timestamp` → 有动态签名
+- 结论：无法脱离 App 独立调用，需通过回放方式采集
+
+### 阶段 5：报告输出
+
+**输出结构**：
+```
+output/analysis/
+├── {app}_api_report.md      # 接口报告（Markdown）
+└── samples/
+    ├── portal_1113_request.json    # 请求样本
+    ├── portal_1113_response.json   # 响应样本（完整 JSON）
+    ├── portal_1131_request.json
+    └── portal_1131_response.json
+```
+
+**报告内容**：
+1. **数据链路图**：list → detail → play 的调用关系
+2. **接口概览表**：路径、用途、角色、调用次数
+3. **每个接口详情**：
+   - 请求参数表（参数名 + 示例值）
+   - 响应结构概览（data 字段的 key 列表）
+   - 列表数据的第一条记录字段
+   - 完整响应引用：`📁 [portal_xxx_response.json](samples/portal_xxx_response.json)`
+   - cURL 命令（可直接复制执行）
+4. **签名机制说明**
+5. **采集策略建议**
+
+**报告中不内联大段 JSON**，所有原始数据保存到 `samples/` 目录。
+
+## 暂停点
+
+### 暂停点 1：操作确认
+**时机**：阶段 2 开始前
+**展示**：当前屏幕截图 + 计划的操作序列
+**用户决策**：确认操作 / 修改操作意图
+
+### 暂停点 2：接口分析结果确认
+**时机**：阶段 4 完成后
+**展示**：识别到的接口列表 + 数据链路
+**用户决策**：确认 / 要求补充抓取（如"详情接口没抓到，再点一个进去"）
+
+### 暂停点 3：报告交付
+**时机**：阶段 5 完成后
+**展示**：报告摘要 + 文件路径
+**用户决策**：确认完成 / 要求补充分析
 
 ## 约束与限制
 
-- 本 skill 需要真实移动设备或模拟器，不支持纯模拟环境
-- HTTPS 解密依赖设备正确安装 CA 证书，部分 App 可能有证书固定（Certificate Pinning）导致解密失败
-- 动态签名接口无法脱离 App 环境独立调用，只能通过回放方式采集
-- 批量采集需注意目标服务的频率限制，建议配置合理的请求间隔
-- 会话参数（Token/Cookie）有时效性，过期后需要用户手动更新
+- 需要真实设备或模拟器（MuMu、Android Studio Emulator 等）
+- 部分 App 有 SSL Pinning（如字节系），需要 Frida/Xposed 绕过才能解密 HTTPS
+- 有动态签名的接口无法脱离 App 独立调用，只能通过回放方式采集
+- tmpfs 方式安装的系统证书在设备重启后会丢失，需要重新安装
+- 滑动操作可能误触内容进入详情，需要从空白区域操作
+
+## 依赖
+
+| 工具 | 用途 | 安装 |
+|------|------|------|
+| mitmproxy | HTTPS 流量拦截 | `uv add mitmproxy` |
+| mobile-mcp | 设备操控 | Kiro 内置 |
+| adb | 设备连接/证书安装/代理设置 | Android SDK 或模拟器自带 |
