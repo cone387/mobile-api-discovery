@@ -2,37 +2,236 @@
 
 ## 概述
 
-本设计文档描述 AI 驱动的移动端接口抓取与代码生成系统的技术架构和实现方案。系统采用模块化设计，核心流程分为三个阶段：设备操控与流量捕获、接口分析与分类、分路径数据采集。
+本设计文档描述 AI 辅助的通用移动端接口抓取与分析系统的技术架构和实现方案。系统采用模块化设计，核心流程分为四个阶段：需求收集与引导、环境准备、用户操作与流量录制、接口分析与报告生成。
+
+系统不绑定任何特定 App，基于通用的响应结构模式进行接口类型识别。AI 负责引导用户明确目标、配置环境、分析流量；用户负责手动操作 App 触发接口。
 
 ## 技术栈
 
 - **语言**: Python 3.11+
-- **设备操控**: Mobile MCP (通过 MCP 协议操控移动设备)
-- **流量拦截**: mitmproxy (Python API 模式)
-- **HTTP 客户端**: requests / httpx
-- **数据存储**: JSON 文件 + SQLite（索引和元数据）
+- **流量拦截**: mitmproxy (Python API 模式，mitmdump + addon)
+- **设备管理**: adb (Android Debug Bridge)
+- **数据存储**: JSON 文件
 - **AI 分析**: LLM API（通过 AI 代理调用）
-- **并发控制**: asyncio + aiohttp
 - **Skill 格式**: Markdown steering 文件
 
 ## 系统架构
 
+```mermaid
+graph TB
+    subgraph CaptureSystem["Capture System (协调层)"]
+        RC[Requirement_Collector<br/>AI 对话引导]
+        EM[Environment_Manager<br/>adb + mitm]
+        TI[Traffic_Interceptor<br/>mitmproxy addon]
+        AA[API_Analyzer<br/>模式识别]
+        RG[Report_Generator<br/>Markdown 报告]
+    end
+
+    RC -->|用户需求确认| EM
+    EM -->|环境就绪通知| User[用户手动操作 App]
+    User -->|操作完成| TI
+    TI -->|流量 JSON 文件| AA
+    AA -->|分析结果| RG
+    RG -->|报告 + samples/| Output[output/analysis/]
+```
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Capture System (协调层)                 │
-├─────────────┬──────────────┬──────────────┬─────────────┤
-│  Device     │   Traffic    │    API       │    Code     │
-│  Controller │   Interceptor│    Analyzer  │    Generator│
-├─────────────┼──────────────┼──────────────┼─────────────┤
-│  MCP Client │   mitmproxy  │   LLM API   │   Template  │
-│             │   (Python)   │             │   Engine    │
-└─────────────┴──────────────┴──────────────┴─────────────┘
+├──────────────┬──────────────┬──────────────┬────────────┤
+│ Requirement  │ Environment  │   Traffic    │   API      │
+│ Collector    │ Manager      │ Interceptor  │  Analyzer  │
+├──────────────┼──────────────┼──────────────┼────────────┤
+│  AI 对话引导  │  adb + mitm  │  mitmproxy   │  模式识别   │
+│              │              │  (addon)     │            │
+└──────────────┴──────────────┴──────────────┴────────────┘
         │              │              │              │
         ▼              ▼              ▼              ▼
-   Mobile Device   Proxy Server   AI Service   Generated Code
+   用户需求确认    设备+代理环境    流量 JSON 文件   Report_Generator
+                                                      │
+                                                      ▼
+                                              Markdown 报告 + samples/
 ```
 
+## 组件与接口
+
+### 1. Requirement_Collector 模块
+
+**职责**: 引导用户明确抓取目标（App 名称、数据类型、操作页面）
+
+**核心接口**:
+```python
+class RequirementCollector:
+    def analyze_input(self, user_message: str) -> RequirementStatus
+    def get_missing_fields(self, current: CaptureTarget) -> List[str]
+    def generate_summary(self, target: CaptureTarget) -> str
+    def is_complete(self, target: CaptureTarget) -> bool
+```
+
+**实现要点**:
+- 解析用户输入，提取 app_name、target_data、operation_pages 三个必填字段
+- 当字段缺失时，返回缺失字段列表供 AI 追问
+- 当所有字段完整时，生成操作计划摘要
+- 如果用户一次性提供完整信息，跳过逐步引导
+
+### 2. Environment_Manager 模块
+
+**职责**: 通过 adb 管理设备连接、证书安装、代理设置、mitmdump 启动
+
+**核心接口**:
+```python
+class EnvironmentManager:
+    async def check_device(self, device_id: str) -> ConnectionResult
+    async def install_certificate(self, device_id: str) -> CertResult
+    async def set_proxy(self, device_id: str, host: str, port: int) -> ProxyResult
+    async def start_mitmdump(self, addon_path: str, port: int) -> ProcessResult
+    async def cleanup(self, device_id: str) -> None
+```
+
+**实现要点**:
+- 通过 `adb devices` 验证设备连接
+- 使用 tmpfs overlay 方式安装 CA 证书到系统证书目录
+- 通过 `adb shell settings put global http_proxy` 设置代理
+- 启动 mitmdump 子进程并加载 capture_addon.py
+- 每个步骤失败时返回具体错误信息和建议
+
+### 3. Traffic_Interceptor 模块
+
+**职责**: 通过 mitmproxy addon 捕获、过滤和存储网络流量
+
+**核心接口**:
+```python
+class TrafficInterceptor:
+    def __init__(self, storage_path: str, filter_rules: FilterRules):
+        ...
+    def start_recording(self) -> None
+    def stop_recording(self) -> None
+    def get_captured_requests(self) -> List[CapturedRequest]
+    def get_stats(self) -> CaptureStats
+```
+
+**mitmproxy addon 设计**:
+```python
+class CaptureAddon:
+    def __init__(self, storage_path: str, filter_rules: FilterRules):
+        self.storage_path = storage_path
+        self.filter_rules = filter_rules
+        self.requests: List[CapturedRequest] = []
+
+    def response(self, flow: http.HTTPFlow) -> None:
+        if self._should_capture(flow):
+            captured = self._flow_to_request(flow)
+            self.requests.append(captured)
+            self._save_to_json(captured)
+
+    def _should_capture(self, flow: http.HTTPFlow) -> bool:
+        # 4 层过滤逻辑
+        if self._is_static_resource(flow):
+            return False
+        if self._is_blacklisted_domain(flow):
+            return False
+        if self._is_blacklisted_path(flow):
+            return False
+        if not self._matches_api_whitelist(flow):
+            return False
+        return True
+```
+
+**4 层过滤规则**:
+1. **静态资源过滤**: Content-Type 为 image/、font/、video/、audio/、text/css、application/javascript
+2. **域名黑名单**: 第三方 SDK 域名（数据上报、崩溃上报、广告、推送、性能监控等）
+3. **路径黑名单**: 已知非业务路径（/sdk/app/、/reportBatchData、/track/v4 等）
+4. **API 白名单**: Content-Type 含 json，或路径含 /api/、/v1/、/v2/、/v3/、/portal/、/gateway/
+
+### 4. API_Analyzer 模块
+
+**职责**: 基于通用响应结构模式识别接口类型，分析参数和数据链路
+
+**核心接口**:
+```python
+class APIAnalyzer:
+    def analyze_all(self, requests: List[CapturedRequest], target: CaptureTarget) -> AnalysisReport
+    def classify_api_type(self, request: CapturedRequest) -> APIType
+    def classify_parameters(self, request: CapturedRequest) -> List[ParameterInfo]
+    def detect_data_links(self, results: List[APIAnalysisResult]) -> List[DataLink]
+```
+
+**通用接口类型识别规则**（不绑定特定字段名）:
+
+| 接口类型 | 识别规则 |
+|----------|----------|
+| LIST | 响应含数组，数组元素为结构化对象（含 id 字段 + 至少一个名称/标题类字段） |
+| PAGINATION | 请求含分页参数（page/offset/cursor/pageFlag），响应含分页标识（hasMore/total/nextPage/nextCursor） |
+| DETAIL | 请求含 id 参数，响应字段数量明显多于列表元素（>1.5 倍） |
+| MEDIA | 响应含媒体 URL 模式（.mp4/.m3u8/.mp3 或路径含 video/play/stream/media） |
+| CONFIG | 响应含 config/settings/version 等配置字段 |
+| AUX | 响应为简单值或状态码，不属于以上类型 |
+
+**参数分类规则**（通用）:
+
+| 类型 | 判断规则 |
+|------|----------|
+| static | version, platform, os, brand, model, channel, appVersion 等固定值 |
+| session | token, userId, session, uid, authorization 等用户身份标识 |
+| dynamic | sign, nonce, timestamp, signature 等每次请求值不同的参数 |
+
+**数据链路检测**:
+- 从 LIST 类型接口响应中提取 ID 字段值
+- 检查 DETAIL 或 MEDIA 类型接口请求中是否使用了该 ID
+- 建立接口间的调用链（如 list → detail → media）
+
+### 5. Report_Generator 模块
+
+**职责**: 将分析结果输出为结构化 Markdown 报告和请求样本文件
+
+**核心接口**:
+```python
+class ReportGenerator:
+    def generate(self, report: AnalysisReport, output_dir: str) -> ReportOutput
+    def generate_curl(self, request: CapturedRequest) -> str
+    def save_samples(self, results: List[APIAnalysisResult], samples_dir: str) -> List[str]
+    def render_markdown(self, report: AnalysisReport) -> str
+```
+
+**报告内容结构**:
+1. 抓取目标摘要
+2. 数据链路图（接口间调用关系）
+3. 接口概览表（路径、用途、类型、调用次数、是否匹配用户目标）
+4. 每个接口详情：
+   - 请求参数表（参数名 + 类型 + 示例值）
+   - 响应结构概览
+   - 列表数据的第一条记录字段示例
+   - 完整响应引用（指向 samples/ 目录）
+   - cURL 命令
+5. 签名机制说明
+6. 采集策略建议
+
 ## 数据模型
+
+### CaptureTarget（抓取目标）
+
+```python
+@dataclass
+class CaptureTarget:
+    app_name: str              # 目标 App 名称
+    target_data: str           # 期望获取的数据描述
+    operation_pages: str       # 需要操作的页面说明
+    filter_domains: Optional[List[str]] = None  # 用户指定的域名白名单
+```
+
+### FilterRules（过滤规则）
+
+```python
+@dataclass
+class FilterRules:
+    content_type_blacklist: List[str]   # Content-Type 黑名单（image/、font/ 等）
+    domain_blacklist: List[str]         # 域名黑名单（SDK、广告等）
+    path_blacklist: List[str]           # 路径黑名单（/sdk/app/ 等）
+    content_type_whitelist: List[str]   # Content-Type 白名单（json）
+    api_path_patterns: List[str]        # API 路径模式白名单（/api/、/v1/ 等）
+    user_domain_whitelist: Optional[List[str]] = None  # 用户指定的域名白名单
+    user_domain_blacklist: Optional[List[str]] = None  # 用户指定的域名黑名单
+```
 
 ### CapturedRequest（捕获的请求）
 
@@ -41,280 +240,194 @@
 class CapturedRequest:
     id: str                    # 唯一标识
     timestamp: datetime        # 捕获时间
-    operation_step_id: str     # 关联的操作步骤 ID
     method: str                # HTTP 方法
     url: str                   # 完整 URL
     headers: dict              # 请求头
-    body: Optional[bytes]      # 请求体
+    body: Optional[str]        # 请求体（文本形式）
     response_status: int       # 响应状态码
     response_headers: dict     # 响应头
-    response_body: Optional[bytes]  # 响应体
+    response_body: Optional[str]  # 响应体（文本形式）
     is_decrypted: bool         # 是否成功解密 HTTPS
 ```
 
-### OperationStep（操作步骤）
-
-```python
-@dataclass
-class OperationStep:
-    id: str                    # 步骤 ID
-    sequence_id: str           # 所属操作序列 ID
-    action_type: str           # 操作类型: click, swipe, input, navigate, wait
-    target: Optional[str]      # 操作目标（元素标识或坐标）
-    parameters: dict           # 操作参数
-    status: str                # 执行状态: pending, success, failed, skipped
-    error_message: Optional[str]  # 失败原因
-```
-
-### OperationSequence（操作序列）
-
-```python
-@dataclass
-class OperationSequence:
-    id: str                    # 序列 ID
-    app_package: str           # 目标 App 包名
-    intent_description: str    # 操作意图描述
-    steps: List[OperationStep] # 操作步骤列表
-    created_at: datetime       # 创建时间
-```
-
-### APIAnalysisResult（接口分析结果）
+### ParameterInfo（参数信息）
 
 ```python
 @dataclass
 class ParameterInfo:
     name: str                  # 参数名
     value_sample: str          # 样本值
-    category: str              # 分类: static, session, dynamic, unknown
+    category: str              # 分类: static, session, dynamic
     source: str                # 来源位置: query, header, body, cookie
-    reasoning: str             # 分类依据
+```
 
+### APIType（接口类型枚举）
+
+```python
+class APIType(Enum):
+    LIST = "list"
+    PAGINATION = "pagination"
+    DETAIL = "detail"
+    MEDIA = "media"
+    CONFIG = "config"
+    AUX = "aux"
+```
+
+### APIAnalysisResult（接口分析结果）
+
+```python
 @dataclass
 class APIAnalysisResult:
     request_id: str            # 关联的请求 ID
     endpoint: str              # 接口路径
-    purpose: str               # 接口用途（feed/user/comment/search 等）
+    api_type: APIType          # 接口类型
     parameters: List[ParameterInfo]  # 参数分析列表
-    reproducibility: str       # 可复现性: reproducible, complex, unknown
-    reproducibility_reason: str # 判定依据
-    confidence: float          # 置信度 0-1
+    has_signature: bool        # 是否包含动态签名
+    signature_fields: List[str]  # 签名相关字段名
+    matches_target: bool       # 是否匹配用户目标
+    call_count: int            # 调用次数
 ```
 
-### GeneratedCode（生成的代码）
+### DataLink（数据链路）
 
 ```python
 @dataclass
-class GeneratedCode:
-    api_id: str                # 关联的接口分析 ID
-    code: str                  # 生成的 Python 代码
-    session_params: List[str]  # 需要用户配置的会话参数名
-    verification_status: str   # 验证状态: pending, passed, failed
-    failure_reason: Optional[str]  # 验证失败原因
+class DataLink:
+    source_endpoint: str       # 源接口路径
+    target_endpoint: str       # 目标接口路径
+    link_field: str            # 关联字段名（如 id）
+    link_type: str             # 链路类型: list_to_detail, list_to_media, detail_to_media
 ```
 
-### CrawlTask（采集任务）
+### AnalysisReport（分析报告）
 
 ```python
 @dataclass
-class CrawlTask:
-    id: str                    # 任务 ID
-    api_id: str                # 目标接口 ID
-    mode: str                  # 采集模式: batch, replay
-    config: CrawlConfig        # 采集配置
-    status: str                # 任务状态: running, paused, completed, failed
-    stats: CrawlStats          # 采集统计
-
-@dataclass
-class CrawlConfig:
-    concurrency: int           # 并发数（batch 模式）
-    interval_ms: int           # 请求间隔毫秒
-    max_rounds: int            # 最大轮次（replay 模式）
-    failure_threshold: int     # 连续失败阈值
-    round_interval_ms: int     # 轮次间隔（replay 模式）
-
-@dataclass
-class CrawlStats:
-    total_requests: int        # 总请求数
-    success_count: int         # 成功数
-    failure_count: int         # 失败数
-    consecutive_failures: int  # 当前连续失败数
-    data_collected: int        # 已采集数据条数
+class AnalysisReport:
+    target: CaptureTarget      # 抓取目标
+    results: List[APIAnalysisResult]  # 所有接口分析结果
+    data_links: List[DataLink]  # 数据链路
+    total_captured: int        # 总捕获请求数（过滤前）
+    total_analyzed: int        # 分析的接口数（过滤后）
+    target_matched: int        # 匹配用户目标的接口数
+    generated_at: datetime     # 报告生成时间
 ```
 
-## 模块设计
+## 正确性属性
 
-### 1. Device_Controller 模块
+*A property is a characteristic or behavior that should hold true across all valid executions of a system—essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-**职责**: 通过 MCP 协议操控移动设备
+### Property 1: 请求存储 Round-Trip
 
-**核心接口**:
-```python
-class DeviceController:
-    async def connect(self, device_id: str) -> ConnectionResult
-    async def launch_app(self, package_name: str) -> bool
-    async def execute_sequence(self, sequence: OperationSequence) -> SequenceResult
-    async def execute_step(self, step: OperationStep) -> StepResult
-    async def get_screen_elements(self) -> List[ScreenElement]
-    async def disconnect(self) -> None
-```
+*For any* valid CapturedRequest object, serializing it to JSON and then deserializing should produce an equivalent object with all fields preserved.
 
-**实现要点**:
-- 使用 MCP 客户端连接 mobile-mcp 服务器
-- 操作步骤之间添加适当等待时间，模拟真实用户行为
-- 步骤失败时记录错误并继续执行后续步骤（容错模式）
-- 支持截图用于 AI 分析当前页面状态
+**Validates: Requirements 3.6**
 
-### 2. Traffic_Interceptor 模块
+### Property 2: 过滤规则不变量
 
-**职责**: 通过 mitmproxy 捕获和存储网络流量
+*For any* list of CapturedRequest objects and any FilterRules configuration, every request that passes the filter must satisfy: its Content-Type is not in the blacklist, its domain is not in the domain blacklist, its path is not in the path blacklist, AND it matches the API whitelist criteria (Content-Type contains json OR path matches known API patterns).
 
-**核心接口**:
-```python
-class TrafficInterceptor:
-    async def start(self, config: ProxyConfig) -> None
-    async def stop(self) -> None
-    async def set_filter(self, rules: FilterRules) -> None
-    async def get_captured_requests(self) -> List[CapturedRequest]
-    async def clear(self) -> None
-    def on_request_captured(self, callback: Callable) -> None
-```
+**Validates: Requirements 4.1, 4.2, 4.3, 4.4**
 
-**实现要点**:
-- 使用 mitmproxy 的 Python API（mitmdump + addon 脚本）
-- 通过 addon 脚本实时捕获请求并写入存储
-- 支持域名、路径、Content-Type 过滤
-- 为每条记录关联当前正在执行的操作步骤 ID
-- HTTPS 解密失败时标记为 `is_decrypted=False`
+### Property 3: 参数分类一致性
 
-**mitmproxy addon 脚本设计**:
-```python
-class CaptureAddon:
-    def __init__(self, storage_path: str, filter_rules: FilterRules):
-        self.storage_path = storage_path
-        self.filter_rules = filter_rules
-        self.current_step_id = None
+*For any* ParameterInfo produced by the analyzer, its category must be exactly one of: "static", "session", or "dynamic". The classification must be deterministic — the same parameter name and value characteristics always produce the same category.
 
-    def request(self, flow: http.HTTPFlow) -> None:
-        # 记录请求开始时间
-        flow.metadata["capture_time"] = datetime.now().isoformat()
-        flow.metadata["step_id"] = self.current_step_id
+**Validates: Requirements 5.3**
 
-    def response(self, flow: http.HTTPFlow) -> None:
-        if self._matches_filter(flow):
-            self._save_flow(flow)
+### Property 4: 时间戳单调递增
 
-    def tls_failed_client_hello(self, client_hello):
-        # 标记 HTTPS 解密失败
-        pass
-```
+*For any* sequence of CapturedRequest objects captured during a single recording session, when sorted by capture order, their timestamps must be monotonically non-decreasing.
 
-### 3. API_Analyzer 模块
+**Validates: Requirements 3.3**
 
-**职责**: 分析接口特征并判定可复现性
+### Property 5: 报告数据一致性
 
-**核心接口**:
-```python
-class APIAnalyzer:
-    async def analyze_batch(self, requests: List[CapturedRequest]) -> List[APIAnalysisResult]
-    async def analyze_single(self, request: CapturedRequest) -> APIAnalysisResult
-    def classify_parameter(self, name: str, value: str, context: RequestContext) -> ParameterInfo
-    def determine_reproducibility(self, params: List[ParameterInfo]) -> Tuple[str, str]
-```
+*For any* AnalysisReport, the total number of analyzed APIs must equal the sum of APIs classified as each type: count(LIST) + count(PAGINATION) + count(DETAIL) + count(MEDIA) + count(CONFIG) + count(AUX) == total_analyzed.
 
-**参数分类规则**:
-- **静态参数**: 多次请求中值不变的参数（如 app_version, platform）
-- **会话参数**: 符合 Token/Cookie 模式的参数（如 Authorization, session_id）
-- **动态参数**: 每次请求值都不同且无法预测的参数（如 sign, nonce, encrypted_data）
-- **未知参数**: 无法确定分类的参数
+**Validates: Requirements 6.2**
 
-**可复现性判定逻辑**:
-```python
-def determine_reproducibility(self, params: List[ParameterInfo]) -> Tuple[str, str]:
-    dynamic_params = [p for p in params if p.category == "dynamic"]
-    unknown_params = [p for p in params if p.category == "unknown"]
-    
-    if not dynamic_params and not unknown_params:
-        return ("reproducible", "所有参数均为静态或会话类型，可直接复现")
-    elif dynamic_params:
-        return ("complex", f"包含动态参数: {[p.name for p in dynamic_params]}")
-    else:
-        return ("unknown", f"包含未确定参数: {[p.name for p in unknown_params]}")
-```
+### Property 6: 接口类型识别一致性
 
-### 4. Code_Generator 模块
+*For any* CapturedRequest classified as LIST type, its response body must contain an array of structured objects. *For any* CapturedRequest classified as PAGINATION type, its request must contain at least one pagination parameter (page/offset/cursor/pageFlag).
 
-**职责**: 为可复现接口生成 Python requests 代码
+**Validates: Requirements 5.2**
 
-**核心接口**:
-```python
-class CodeGenerator:
-    def generate(self, analysis: APIAnalysisResult, request: CapturedRequest) -> GeneratedCode
-    async def verify(self, generated: GeneratedCode) -> VerificationResult
-    def extract_session_params(self, request: CapturedRequest, params: List[ParameterInfo]) -> List[str]
-```
+### Property 7: 缺失字段检测
 
-**代码生成模板结构**:
-```python
-# 生成的代码模板示例
-"""
-import requests
+*For any* CaptureTarget with one or more required fields (app_name, target_data, operation_pages) set to empty/None, the RequirementCollector.get_missing_fields() must return a non-empty list containing exactly those missing field names.
 
-# === 会话参数（需要用户配置） ===
-# 获取方式: 从浏览器开发者工具或 App 抓包获取
-TOKEN = "your_token_here"
+**Validates: Requirements 1.2, 1.3, 1.4**
 
-# === 请求函数 ===
-def fetch_{endpoint_name}({param_args}):
-    url = "{url}"
-    headers = {headers_dict}
-    params = {params_dict}
-    
-    try:
-        response = requests.{method}(url, headers=headers, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"请求失败: {e}")
-        return None
-"""
-```
+### Property 8: cURL 命令正确性
 
-### 5. Batch_Crawler 模块
+*For any* CapturedRequest, the generated cURL command must contain the correct HTTP method, the complete URL, and all non-trivial request headers from the original request.
 
-**职责**: 执行批量数据采集
+**Validates: Requirements 6.3**
 
-**核心接口**:
-```python
-class BatchCrawler:
-    async def start_task(self, task: CrawlTask) -> None
-    async def pause_task(self, task_id: str) -> None
-    async def resume_task(self, task_id: str) -> None
-    def get_task_stats(self, task_id: str) -> CrawlStats
-```
+### Property 9: 数据链路检测
 
-**实现要点**:
-- 使用 asyncio + aiohttp 实现并发控制
-- 通过信号量控制并发数
-- 请求间隔使用 asyncio.sleep
-- 连续失败计数器达到阈值时自动暂停
-- 检测 401/403 响应码触发认证失败处理
+*For any* set of APIAnalysisResult where a LIST-type API's response contains ID values that appear as request parameters in a DETAIL-type or MEDIA-type API, the detect_data_links function must identify and return this relationship.
 
-### 6. Replay_Controller 模块
+**Validates: Requirements 5.4**
 
-**职责**: 对复杂接口通过设备操作重复触发采集
+## 错误处理
 
-**核心接口**:
-```python
-class ReplayController:
-    async def generate_replay_sequence(self, api: APIAnalysisResult, original_sequence: OperationSequence) -> OperationSequence
-    async def execute_replay(self, task: CrawlTask) -> ReplayResult
-```
+### 环境准备阶段
 
-**实现要点**:
-- 从原始操作序列中提取触发目标接口的最小操作子集
-- 每轮执行后等待配置的间隔时间
-- 通过 Traffic_Interceptor 的过滤功能仅捕获目标接口
-- 重试一次后仍失败则标记为"采集失败"
+| 错误场景 | 处理方式 |
+|----------|----------|
+| 设备未连接 | 返回设备标识和连接失败原因，建议检查 adb 连接 |
+| CA 证书安装失败 | 返回具体原因，提供手动安装指引（需要 root 权限） |
+| 代理设置失败 | 返回错误信息，建议检查设备网络设置权限 |
+| mitmdump 启动失败 | 返回失败原因，建议检查端口占用（`lsof -i :8080`） |
+| mitmdump 进程异常退出 | 检测进程状态，提示用户重新启动 |
+
+### 流量录制阶段
+
+| 错误场景 | 处理方式 |
+|----------|----------|
+| HTTPS 解密失败 | 记录 URL 并标记 is_decrypted=False，不中断录制 |
+| 磁盘空间不足 | 警告用户，建议清理空间或停止录制 |
+| JSON 写入失败 | 重试一次，仍失败则记录错误日志并跳过该请求 |
+
+### 分析阶段
+
+| 错误场景 | 处理方式 |
+|----------|----------|
+| 无捕获数据 | 提示用户可能未正确操作或代理未生效 |
+| 响应体解析失败 | 跳过该请求，标记为 AUX 类型 |
+| 未找到匹配目标的接口 | 在报告中明确说明，列出所有已识别的业务接口 |
+
+## 测试策略
+
+### 属性测试（Property-Based Testing）
+
+使用 **Hypothesis** 库进行属性测试，每个属性测试运行最少 100 次迭代。
+
+**适用范围**:
+- 数据序列化/反序列化（Round-Trip）
+- 过滤规则逻辑（不变量）
+- 参数分类逻辑（一致性）
+- 接口类型识别逻辑（结构模式匹配）
+- 报告数据统计（计数一致性）
+- cURL 命令生成（正确性）
+
+**测试标签格式**: `Feature: ai-api-capture, Property {number}: {property_text}`
+
+### 单元测试（Example-Based）
+
+- 需求收集模块：完整输入跳过引导、缺失字段引导
+- 环境管理模块：各步骤成功/失败场景（mock adb）
+- 过滤规则：具体域名/路径/Content-Type 的过滤效果
+- 接口分类：具体 JSON 响应结构的分类结果
+- 报告生成：报告格式和内容完整性
+
+### 集成测试
+
+- 完整流程：从流量 JSON 文件到分析报告的端到端测试
+- mitmproxy addon：使用 mock flow 测试 addon 的过滤和存储逻辑
+- 环境管理：使用 mock subprocess 测试 adb/mitmdump 命令执行
 
 ## 文件结构
 
@@ -323,193 +436,49 @@ ai-api-capture/
 ├── src/
 │   ├── __init__.py
 │   ├── capture_system.py        # 主协调器
-│   ├── device_controller.py     # 设备操控模块
-│   ├── traffic_interceptor.py   # 流量拦截模块
-│   ├── api_analyzer.py          # 接口分析模块
-│   ├── code_generator.py        # 代码生成模块
-│   ├── batch_crawler.py         # 批量采集模块
-│   ├── replay_controller.py     # 回放控制模块
-│   ├── models.py                # 数据模型定义
-│   ├── storage.py               # 数据存储层
-│   └── report_generator.py      # 报告生成模块
+│   ├── requirement_collector.py # 需求收集与引导
+│   ├── environment_manager.py   # 环境管理（adb + mitm）
+│   ├── traffic_interceptor.py   # 流量拦截
+│   ├── api_analyzer.py          # 接口分析（通用模式识别）
+│   ├── report_generator.py      # 报告生成
+│   ├── models.py                # 数据模型
+│   └── storage.py               # 数据存储
 ├── addons/
 │   └── capture_addon.py         # mitmproxy addon 脚本
-├── templates/
-│   └── code_template.py.jinja   # 代码生成模板
 ├── skill/
-│   └── ai-api-capture.md        # 通用 AI skill 指令文件
-├── output/                      # 默认输出目录
-│   ├── captures/                # 捕获的流量数据
-│   ├── analysis/                # 分析报告
-│   ├── generated/               # 生成的代码
-│   └── data/                    # 采集的数据
+│   └── ai-api-capture.md        # 通用 skill 指令文件
+├── output/
+│   ├── captures/                # 捕获的流量 JSON
+│   └── analysis/                # 分析报告 + samples
+│       └── samples/             # 请求/响应 JSON 样本
 ├── tests/
-│   ├── test_traffic_interceptor.py
-│   ├── test_api_analyzer.py
-│   ├── test_code_generator.py
-│   ├── test_batch_crawler.py
-│   └── test_models.py
+│   ├── __init__.py
+│   ├── test_models.py           # 数据模型测试
+│   ├── test_requirement_collector.py  # 需求收集测试
+│   ├── test_environment_manager.py    # 环境管理测试
+│   ├── test_traffic_interceptor.py    # 流量拦截测试
+│   ├── test_api_analyzer.py     # 接口分析测试
+│   ├── test_report_generator.py # 报告生成测试
+│   ├── test_filter_property.py  # 过滤规则属性测试
+│   ├── test_analyzer_property.py # 分析器属性测试
+│   ├── test_storage.py          # 存储测试
+│   └── test_integration.py      # 集成测试
 ├── pyproject.toml
 └── README.md
 ```
 
-## 正确性属性
-
-### 属性 1: 请求存储 Round-Trip（需求 1.4, 2.2）
-
-**类型**: Round-Trip
-
-**描述**: CapturedRequest 对象序列化到 JSON 文件后再反序列化，应得到等价对象。
-
-```python
-from hypothesis import given, strategies as st
-
-@given(st.builds(CapturedRequest, ...))
-def test_captured_request_roundtrip(request):
-    serialized = request.to_json()
-    deserialized = CapturedRequest.from_json(serialized)
-    assert deserialized == request
-```
-
-### 属性 2: 过滤规则不变量（需求 2.5）
-
-**类型**: Metamorphic / Invariant
-
-**描述**: 过滤后的请求列表中每条记录都满足过滤规则；过滤后的列表长度不超过原始列表长度。
-
-```python
-@given(requests=st.lists(captured_request_strategy()), rules=filter_rules_strategy())
-def test_filter_invariant(requests, rules):
-    filtered = apply_filter(requests, rules)
-    assert len(filtered) <= len(requests)
-    for req in filtered:
-        assert matches_rules(req, rules)
-```
-
-### 属性 3: 参数分类与可复现性判定一致性（需求 3.3）
-
-**类型**: Invariant
-
-**描述**: 如果接口被标记为"可复现"，则其参数列表中不包含 category 为 "dynamic" 的参数。
-
-```python
-@given(params=st.lists(parameter_info_strategy()))
-def test_reproducibility_consistency(params):
-    result, reason = determine_reproducibility(params)
-    if result == "reproducible":
-        assert all(p.category != "dynamic" for p in params)
-        assert all(p.category != "unknown" for p in params)
-    elif result == "complex":
-        assert any(p.category == "dynamic" for p in params)
-```
-
-### 属性 4: 时间戳单调递增（需求 2.3）
-
-**类型**: Invariant
-
-**描述**: 同一操作序列中捕获的请求，按捕获顺序排列时时间戳应单调递增。
-
-```python
-@given(requests=st.lists(captured_request_strategy(), min_size=2))
-def test_timestamp_monotonic(requests):
-    sorted_requests = sorted(requests, key=lambda r: r.timestamp)
-    for i in range(1, len(sorted_requests)):
-        assert sorted_requests[i].timestamp >= sorted_requests[i-1].timestamp
-```
-
-### 属性 5: 批量采集失败阈值触发（需求 5.3）
-
-**类型**: Invariant
-
-**描述**: 当连续失败次数达到配置阈值时，采集任务状态必须变为 paused。
-
-```python
-@given(threshold=st.integers(min_value=1, max_value=100),
-       results=st.lists(st.booleans(), min_size=1))
-def test_failure_threshold_triggers_pause(threshold, results):
-    crawler = BatchCrawler(config=CrawlConfig(failure_threshold=threshold))
-    for success in results:
-        crawler.record_result(success)
-    
-    if crawler.stats.consecutive_failures >= threshold:
-        assert crawler.status == "paused"
-```
-
-### 属性 6: 汇总报告数据一致性（需求 7.1）
-
-**类型**: Invariant
-
-**描述**: 汇总报告中的总接口数量等于可复现接口数量加复杂接口数量加未知接口数量。
-
-```python
-@given(analyses=st.lists(api_analysis_result_strategy(), min_size=1))
-def test_report_counts_consistency(analyses):
-    report = generate_summary_report(analyses)
-    assert report.total_count == report.reproducible_count + report.complex_count + report.unknown_count
-    assert report.total_count == len(analyses)
-```
-
-### 属性 7: 采集数据存储 Round-Trip（需求 5.2）
-
-**类型**: Round-Trip
-
-**描述**: 采集到的数据以 JSON 格式写入后再读取，应得到等价数据。
-
-```python
-@given(data=crawl_data_strategy())
-def test_crawl_data_roundtrip(data):
-    json_str = json.dumps(data.to_dict())
-    restored = CrawlData.from_dict(json.loads(json_str))
-    assert restored == data
-```
-
-## Skill 文件设计
-
-skill 指令文件 (`skill/ai-api-capture.md`) 结构：
-
-```markdown
----
-name: AI API Capture
-description: AI 驱动的移动端接口抓取与代码生成
-version: 1.0.0
-keywords: [api, capture, mobile, mitmproxy, crawl, reverse-engineering]
-dependencies:
-  tools: [mitmproxy, mobile-mcp]
-  python: [requests, httpx, aiohttp, mitmproxy]
----
-
-# AI API Capture Skill
-
-## 触发条件
-当用户提到"抓取接口"、"App 接口"、"移动端抓包"等关键词时激活。
-
-## 输入参数
-- 目标 App 包名
-- 设备标识
-- 操作意图描述
-- 采集目标（可选）
-
-## 执行流程
-### 阶段 1: 操控与捕获
-...
-### 阶段 2: 分析与分类
-...
-### 阶段 3: 分路径采集
-...
-
-## 暂停点
-- 接口分类结果确认
-- 复杂接口处理策略确认
-```
-
 ## 关键设计决策
 
-1. **mitmproxy 使用 Python API 模式而非命令行模式**: 便于与系统深度集成，实时获取流量数据，支持动态过滤规则。
+1. **不使用 Mobile MCP 操控设备**: 用户手动操作 App 更灵活、更可靠，避免了 UI 自动化的脆弱性和兼容性问题。AI 只负责环境准备和流量分析。
 
-2. **操作序列由 AI 生成而非预定义**: 利用 LLM 的理解能力，根据用户意图和当前页面状态动态生成操作步骤，适应不同 App 的 UI 结构。
+2. **mitmproxy 使用 addon 模式**: 通过 mitmdump + addon 脚本实现流量捕获，便于实时过滤和存储，支持动态调整过滤规则。
 
-3. **验证失败自动降级为复杂接口**: 保守策略，避免生成无法工作的代码。用户可以手动覆盖分类结果。
+3. **通用接口识别（不绑定特定字段名）**: 基于响应结构的通用模式（数组、分页标识、ID 参数等）识别接口类型，适用于任意 App。
 
-4. **SQLite 用于索引，JSON 用于数据存储**: JSON 保持数据的完整性和可读性，SQLite 提供快速查询和关联能力。
+4. **4 层过滤减少噪音**: 在捕获阶段就排除无关流量（静态资源、SDK、非业务路径），减少后续分析的数据量和 token 消耗。
 
-5. **异步架构**: 设备操控、流量捕获和数据采集都是 IO 密集型操作，使用 asyncio 提高并发效率。
+5. **报告而非代码生成**: 输出结构化的 Markdown 报告 + cURL 命令 + JSON 样本，供其他 AI 或开发者参考，比生成代码更通用、更灵活。
+
+6. **JSON 文件存储**: 简单直接，无需数据库依赖，便于查看和调试。每个请求独立存储，支持增量写入。
+
+7. **AI 引导式需求收集**: 当用户需求不清晰时主动引导，确保后续分析能精准聚焦在用户关心的接口上。

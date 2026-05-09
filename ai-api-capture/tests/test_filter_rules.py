@@ -1,13 +1,13 @@
 """过滤规则引擎单元测试
 
-测试 FilterRules 和 CaptureAddon._matches_filter 的过滤逻辑：
-- 空规则（允许所有）
-- 域名过滤（精确匹配、子域名匹配、不匹配）
-- 多域名过滤
-- 路径前缀过滤（匹配、不匹配、部分匹配）
-- Content-Type 过滤（精确匹配、部分匹配）
-- 组合过滤（所有维度必须通过）
-- 边界情况：空 URL、无响应 Content-Type
+测试 CaptureAddon 的 4 层过滤逻辑：
+- 第 1 层：静态资源过滤（Content-Type 黑名单）
+- 第 2 层：域名黑名单
+- 第 3 层：路径黑名单
+- 第 4 层：API 白名单（Content-Type 含 json 或路径匹配 API 模式）
+- 用户自定义域名白名单/黑名单
+- 组合过滤
+- 边界情况
 """
 
 import os
@@ -43,6 +43,8 @@ def _make_flow(url: str, response_content_type: str = "") -> MagicMock:
         flow.response.headers.get.side_effect = (
             lambda key, default="": default
         )
+    # Make flow.response truthy
+    flow.response.__bool__ = lambda self: True
 
     return flow
 
@@ -65,367 +67,370 @@ def _make_flow_no_response(url: str) -> MagicMock:
 class TestFilterRulesDataclass:
     """FilterRules 数据类测试"""
 
-    def test_default_empty_rules(self):
-        """默认规则应为空列表"""
+    def test_default_values(self):
+        """默认规则应包含预定义的黑名单和白名单"""
         rules = FilterRules()
-        assert rules.domains == []
-        assert rules.paths == []
-        assert rules.content_types == []
+        assert "image/" in rules.content_type_blacklist
+        assert "font/" in rules.content_type_blacklist
+        assert len(rules.domain_blacklist) > 0
+        assert len(rules.path_blacklist) > 0
+        assert "json" in rules.content_type_whitelist
+        assert "/api/" in rules.api_path_patterns
+        assert rules.user_domain_whitelist is None
+        assert rules.user_domain_blacklist is None
 
-    def test_to_dict(self):
-        """to_dict 应正确序列化"""
+    def test_custom_values(self):
+        """自定义规则应正确设置"""
         rules = FilterRules(
-            domains=["example.com"],
-            paths=["/api/"],
-            content_types=["application/json"],
+            content_type_blacklist=["image/"],
+            domain_blacklist=["bad.com"],
+            path_blacklist=["/sdk/"],
+            content_type_whitelist=["json"],
+            api_path_patterns=["/api/"],
+            user_domain_whitelist=["good.com"],
+            user_domain_blacklist=["evil.com"],
         )
-        result = rules.to_dict()
-        assert result == {
-            "domains": ["example.com"],
-            "paths": ["/api/"],
-            "content_types": ["application/json"],
-        }
-
-    def test_from_dict(self):
-        """from_dict 应正确反序列化"""
-        data = {
-            "domains": ["example.com", "test.com"],
-            "paths": ["/api/v1"],
-            "content_types": ["json"],
-        }
-        rules = FilterRules.from_dict(data)
-        assert rules.domains == ["example.com", "test.com"]
-        assert rules.paths == ["/api/v1"]
-        assert rules.content_types == ["json"]
-
-    def test_from_dict_missing_keys(self):
-        """from_dict 缺少键时应使用空列表"""
-        rules = FilterRules.from_dict({})
-        assert rules.domains == []
-        assert rules.paths == []
-        assert rules.content_types == []
+        assert rules.content_type_blacklist == ["image/"]
+        assert rules.domain_blacklist == ["bad.com"]
+        assert rules.path_blacklist == ["/sdk/"]
+        assert rules.content_type_whitelist == ["json"]
+        assert rules.api_path_patterns == ["/api/"]
+        assert rules.user_domain_whitelist == ["good.com"]
+        assert rules.user_domain_blacklist == ["evil.com"]
 
 
-class TestEmptyRules:
-    """空规则测试 - 空列表表示允许所有"""
+class TestStaticResourceFilter:
+    """第 1 层：静态资源过滤测试"""
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
         self.addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+            ),
         )
 
-    def test_empty_rules_allow_all(self):
-        """空规则应允许所有请求"""
-        flow = _make_flow("https://any-domain.com/any/path", "text/html")
-        assert self.addon._matches_filter(flow) is True
+    def test_image_filtered(self):
+        """image/ Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "image/png")
+        assert self.addon._should_capture(flow) is False
 
-    def test_empty_rules_allow_any_domain(self):
-        """空规则应允许任何域名"""
-        flow = _make_flow("https://random.example.org/test", "application/json")
-        assert self.addon._matches_filter(flow) is True
+    def test_font_filtered(self):
+        """font/ Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "font/woff2")
+        assert self.addon._should_capture(flow) is False
 
-    def test_empty_rules_allow_any_path(self):
-        """空规则应允许任何路径"""
-        flow = _make_flow("https://example.com/deeply/nested/path", "text/plain")
-        assert self.addon._matches_filter(flow) is True
+    def test_video_filtered(self):
+        """video/ Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "video/mp4")
+        assert self.addon._should_capture(flow) is False
 
-    def test_empty_rules_allow_any_content_type(self):
-        """空规则应允许任何 Content-Type"""
-        flow = _make_flow("https://example.com/data", "image/png")
-        assert self.addon._matches_filter(flow) is True
+    def test_audio_filtered(self):
+        """audio/ Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "audio/mpeg")
+        assert self.addon._should_capture(flow) is False
+
+    def test_css_filtered(self):
+        """text/css Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "text/css")
+        assert self.addon._should_capture(flow) is False
+
+    def test_javascript_filtered(self):
+        """application/javascript Content-Type 应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "application/javascript")
+        assert self.addon._should_capture(flow) is False
+
+    def test_json_not_filtered(self):
+        """application/json Content-Type 不应被过滤"""
+        flow = _make_flow("https://example.com/api/data", "application/json")
+        assert self.addon._should_capture(flow) is True
 
 
-class TestDomainFilter:
-    """域名过滤测试"""
+class TestDomainBlacklist:
+    """第 2 层：域名黑名单测试"""
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    def test_exact_domain_match(self):
-        """精确域名匹配"""
+    def test_blacklisted_domain_filtered(self):
+        """黑名单域名应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=["analytics.oceanengine.com"],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("https://example.com/api/users", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://analytics.oceanengine.com/api/report", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_subdomain_match(self):
-        """子域名匹配 - api.example.com 应匹配 example.com"""
+    def test_subdomain_of_blacklisted_filtered(self):
+        """黑名单域名的子域名应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=["bugly.qq.com"],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("https://api.example.com/data", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://pro.bugly.qq.com/api/crash", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_deep_subdomain_match(self):
-        """深层子域名匹配 - v2.api.example.com 应匹配 example.com"""
+    def test_non_blacklisted_domain_passes(self):
+        """非黑名单域名应通过"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=["analytics.oceanengine.com"],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("https://v2.api.example.com/data", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.myapp.com/v1/users", "application/json")
+        assert addon._should_capture(flow) is True
 
-    def test_domain_non_match(self):
-        """域名不匹配"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
-        )
-        flow = _make_flow("https://other-site.org/api/users", "application/json")
-        assert addon._matches_filter(flow) is False
-
-    def test_domain_partial_name_no_match(self):
-        """域名部分名称不应匹配 - notexample.com 不应匹配 example.com"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
-        )
-        flow = _make_flow("https://notexample.com/api", "application/json")
-        assert addon._matches_filter(flow) is False
-
-    def test_multiple_domains_first_match(self):
-        """多域名过滤 - 匹配第一个域名"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com", "test.io"]),
-        )
-        flow = _make_flow("https://example.com/api", "application/json")
-        assert addon._matches_filter(flow) is True
-
-    def test_multiple_domains_second_match(self):
-        """多域名过滤 - 匹配第二个域名"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com", "test.io"]),
-        )
-        flow = _make_flow("https://api.test.io/data", "application/json")
-        assert addon._matches_filter(flow) is True
-
-    def test_multiple_domains_none_match(self):
-        """多域名过滤 - 都不匹配"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com", "test.io"]),
-        )
-        flow = _make_flow("https://other.org/api", "application/json")
-        assert addon._matches_filter(flow) is False
+    def test_default_blacklist_includes_known_sdks(self):
+        """默认黑名单应包含已知 SDK 域名"""
+        rules = FilterRules()
+        assert "analytics.oceanengine.com" in rules.domain_blacklist
+        assert "sss.umeng.com" in rules.domain_blacklist
+        assert "tracking.miui.com" in rules.domain_blacklist
+        assert "bugly.qq.com" in rules.domain_blacklist
+        assert "gepush.com" in rules.domain_blacklist
+        assert "tingyun.com" in rules.domain_blacklist
 
 
-class TestPathFilter:
-    """路径前缀过滤测试"""
+class TestPathBlacklist:
+    """第 3 层：路径黑名单测试"""
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    def test_path_prefix_match(self):
-        """路径前缀匹配"""
+    def test_blacklisted_path_filtered(self):
+        """黑名单路径应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=["/sdk/app/"],
+            ),
         )
-        flow = _make_flow("https://example.com/api/users", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.example.com/sdk/app/init", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_path_prefix_exact_match(self):
-        """路径前缀精确匹配（路径等于前缀）"""
+    def test_reportBatchData_filtered(self):
+        """/reportBatchData 路径应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/v1"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=["/reportBatchData"],
+            ),
         )
-        flow = _make_flow("https://example.com/api/v1", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.example.com/reportBatchData", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_path_prefix_non_match(self):
-        """路径前缀不匹配"""
+    def test_track_v4_filtered(self):
+        """/track/v4 路径应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=["/track/v4"],
+            ),
         )
-        flow = _make_flow("https://example.com/web/page", "text/html")
-        assert addon._matches_filter(flow) is False
+        flow = _make_flow("https://api.example.com/track/v4/event", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_path_prefix_partial_segment_match(self):
-        """路径前缀部分段匹配 - /api 应匹配 /api/users 和 /api-v2"""
+    def test_non_blacklisted_path_passes(self):
+        """非黑名单路径应通过"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=["/sdk/app/"],
+            ),
         )
-        # /api-v2 starts with /api so it matches (prefix-based, not segment-based)
-        flow = _make_flow("https://example.com/api-v2/data", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.example.com/v1/users", "application/json")
+        assert addon._should_capture(flow) is True
 
-    def test_multiple_path_prefixes(self):
-        """多路径前缀 - 匹配任一即可"""
-        addon = CaptureAddon(
+    def test_default_blacklist_includes_known_paths(self):
+        """默认黑名单应包含已知非业务路径"""
+        rules = FilterRules()
+        assert "/sdk/app/" in rules.path_blacklist
+        assert "/reportBatchData" in rules.path_blacklist
+        assert "/track/v4" in rules.path_blacklist
+        assert "/upload-json" in rules.path_blacklist
+
+
+class TestAPIWhitelist:
+    """第 4 层：API 白名单测试"""
+
+    def setup_method(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/", "/v2/"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("https://example.com/v2/users", "application/json")
-        assert addon._matches_filter(flow) is True
 
-    def test_root_path_prefix(self):
-        """根路径前缀 / 应匹配所有路径"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/"]),
-        )
-        flow = _make_flow("https://example.com/anything/here", "text/html")
-        assert addon._matches_filter(flow) is True
+    def test_json_content_type_passes(self):
+        """Content-Type 含 json 应通过白名单"""
+        flow = _make_flow("https://example.com/custom/endpoint", "application/json")
+        assert self.addon._should_capture(flow) is True
+
+    def test_json_with_charset_passes(self):
+        """Content-Type 含 json 带 charset 应通过白名单"""
+        flow = _make_flow("https://example.com/custom/endpoint", "application/json; charset=utf-8")
+        assert self.addon._should_capture(flow) is True
+
+    def test_api_path_pattern_passes(self):
+        """路径含 /api/ 应通过白名单"""
+        flow = _make_flow("https://example.com/api/users", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_v1_path_pattern_passes(self):
+        """路径含 /v1/ 应通过白名单"""
+        flow = _make_flow("https://example.com/v1/data", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_v2_path_pattern_passes(self):
+        """路径含 /v2/ 应通过白名单"""
+        flow = _make_flow("https://example.com/v2/data", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_v3_path_pattern_passes(self):
+        """路径含 /v3/ 应通过白名单"""
+        flow = _make_flow("https://example.com/v3/data", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_portal_path_pattern_passes(self):
+        """路径含 /portal/ 应通过白名单"""
+        flow = _make_flow("https://example.com/portal/home", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_gateway_path_pattern_passes(self):
+        """路径含 /gateway/ 应通过白名单"""
+        flow = _make_flow("https://example.com/gateway/service", "text/plain")
+        assert self.addon._should_capture(flow) is True
+
+    def test_non_api_non_json_filtered(self):
+        """既不是 JSON 也不匹配 API 路径模式的应被过滤"""
+        flow = _make_flow("https://example.com/page/about", "text/html")
+        assert self.addon._should_capture(flow) is False
+
+    def test_empty_content_type_with_api_path(self):
+        """空 Content-Type 但路径匹配 API 模式应通过"""
+        flow = _make_flow("https://example.com/api/data", "")
+        assert self.addon._should_capture(flow) is True
 
 
-class TestContentTypeFilter:
-    """Content-Type 过滤测试"""
+class TestUserDomainFilters:
+    """用户自定义域名白名单/黑名单测试"""
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    def test_content_type_exact_match(self):
-        """Content-Type 精确匹配"""
+    def test_user_whitelist_only_allows_listed(self):
+        """用户域名白名单应只允许白名单中的域名"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["application/json"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+                user_domain_whitelist=["api.myapp.com"],
+            ),
         )
-        flow = _make_flow("https://example.com/api", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow_allowed = _make_flow("https://api.myapp.com/v1/data", "application/json")
+        flow_blocked = _make_flow("https://api.other.com/v1/data", "application/json")
+        assert addon._should_capture(flow_allowed) is True
+        assert addon._should_capture(flow_blocked) is False
 
-    def test_content_type_partial_match(self):
-        """Content-Type 部分匹配 - 'json' in 'application/json'"""
+    def test_user_blacklist_blocks_listed(self):
+        """用户域名黑名单应阻止黑名单中的域名"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["json"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+                user_domain_blacklist=["blocked.com"],
+            ),
         )
-        flow = _make_flow("https://example.com/api", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow_allowed = _make_flow("https://api.myapp.com/v1/data", "application/json")
+        flow_blocked = _make_flow("https://blocked.com/v1/data", "application/json")
+        assert addon._should_capture(flow_allowed) is True
+        assert addon._should_capture(flow_blocked) is False
 
-    def test_content_type_with_charset(self):
-        """Content-Type 带 charset 参数时也应匹配"""
+    def test_user_whitelist_subdomain_match(self):
+        """用户域名白名单应支持子域名匹配"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["application/json"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+                user_domain_whitelist=["myapp.com"],
+            ),
         )
-        flow = _make_flow("https://example.com/api", "application/json; charset=utf-8")
-        assert addon._matches_filter(flow) is True
-
-    def test_content_type_non_match(self):
-        """Content-Type 不匹配"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["application/json"]),
-        )
-        flow = _make_flow("https://example.com/image", "image/png")
-        assert addon._matches_filter(flow) is False
-
-    def test_multiple_content_types(self):
-        """多 Content-Type 过滤 - 匹配任一即可"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["json", "xml"]),
-        )
-        flow = _make_flow("https://example.com/api", "application/xml")
-        assert addon._matches_filter(flow) is True
-
-    def test_content_type_no_response(self):
-        """无响应时 Content-Type 过滤应不通过"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["application/json"]),
-        )
-        flow = _make_flow_no_response("https://example.com/api")
-        assert addon._matches_filter(flow) is False
-
-    def test_content_type_empty_response_header(self):
-        """响应无 Content-Type 头时过滤应不通过"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["application/json"]),
-        )
-        flow = _make_flow("https://example.com/api", "")
-        assert addon._matches_filter(flow) is False
+        flow = _make_flow("https://sub.myapp.com/v1/data", "application/json")
+        assert addon._should_capture(flow) is True
 
 
 class TestCombinedFilters:
-    """组合过滤测试 - 所有维度必须通过（AND 逻辑）"""
+    """组合过滤测试 - 所有层必须通过"""
 
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    def test_all_dimensions_pass(self):
-        """所有维度都通过时应允许"""
+    def test_all_layers_pass(self):
+        """所有层都通过时应允许"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
             filter_rules=FilterRules(
-                domains=["example.com"],
-                paths=["/api/"],
-                content_types=["json"],
+                domain_blacklist=["bad.com"],
+                path_blacklist=["/sdk/"],
             ),
         )
-        flow = _make_flow("https://api.example.com/api/users", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.example.com/v1/users", "application/json")
+        assert addon._should_capture(flow) is True
 
-    def test_domain_fails_others_pass(self):
-        """域名不通过时应拒绝（即使路径和 Content-Type 通过）"""
+    def test_static_resource_blocks_even_with_api_path(self):
+        """静态资源即使路径匹配 API 模式也应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
             filter_rules=FilterRules(
-                domains=["example.com"],
-                paths=["/api/"],
-                content_types=["json"],
+                domain_blacklist=[],
+                path_blacklist=[],
             ),
         )
-        flow = _make_flow("https://other.org/api/users", "application/json")
-        assert addon._matches_filter(flow) is False
+        flow = _make_flow("https://example.com/api/avatar.png", "image/png")
+        assert addon._should_capture(flow) is False
 
-    def test_path_fails_others_pass(self):
-        """路径不通过时应拒绝（即使域名和 Content-Type 通过）"""
+    def test_blacklisted_domain_blocks_even_with_json(self):
+        """黑名单域名即使返回 JSON 也应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
             filter_rules=FilterRules(
-                domains=["example.com"],
-                paths=["/api/"],
-                content_types=["json"],
+                domain_blacklist=["analytics.example.com"],
+                path_blacklist=[],
             ),
         )
-        flow = _make_flow("https://example.com/web/page", "application/json")
-        assert addon._matches_filter(flow) is False
+        flow = _make_flow("https://analytics.example.com/api/report", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_content_type_fails_others_pass(self):
-        """Content-Type 不通过时应拒绝（即使域名和路径通过）"""
+    def test_blacklisted_path_blocks_even_with_json(self):
+        """黑名单路径即使返回 JSON 也应被过滤"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
             filter_rules=FilterRules(
-                domains=["example.com"],
-                paths=["/api/"],
-                content_types=["json"],
+                domain_blacklist=[],
+                path_blacklist=["/reportBatchData"],
             ),
         )
-        flow = _make_flow("https://example.com/api/image", "image/png")
-        assert addon._matches_filter(flow) is False
-
-    def test_domain_and_path_only(self):
-        """仅域名和路径过滤（Content-Type 为空列表允许所有）"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(
-                domains=["example.com"],
-                paths=["/api/"],
-            ),
-        )
-        flow = _make_flow("https://example.com/api/data", "image/png")
-        assert addon._matches_filter(flow) is True
-
-    def test_content_type_only(self):
-        """仅 Content-Type 过滤（域名和路径为空列表允许所有）"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(content_types=["json"]),
-        )
-        flow = _make_flow("https://any-domain.com/any/path", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://api.example.com/reportBatchData", "application/json")
+        assert addon._should_capture(flow) is False
 
 
 class TestEdgeCases:
@@ -434,57 +439,40 @@ class TestEdgeCases:
     def setup_method(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    def test_empty_url_with_domain_filter(self):
-        """空 URL 主机名时域名过滤应不通过"""
+    def test_no_response_filtered(self):
+        """无响应的请求应被过滤（无法判断 Content-Type）"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=[],
+                path_blacklist=[],
+            ),
         )
-        # URL without hostname
-        flow = _make_flow("http:///path/only", "application/json")
-        assert addon._matches_filter(flow) is False
+        flow = _make_flow_no_response("https://example.com/api/data")
+        # 无响应时 content_type 为空，但路径含 /api/ 所以通过白名单
+        assert addon._should_capture(flow) is True
 
     def test_url_with_port(self):
         """带端口的 URL 域名匹配"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=["bad.com"],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("https://example.com:8443/api", "application/json")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("https://bad.com:8443/api/data", "application/json")
+        assert addon._should_capture(flow) is False
 
-    def test_http_url(self):
-        """HTTP URL 也应正常过滤"""
+    def test_empty_hostname(self):
+        """空主机名不应匹配任何域名黑名单"""
         addon = CaptureAddon(
             storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
+            filter_rules=FilterRules(
+                domain_blacklist=["example.com"],
+                path_blacklist=[],
+            ),
         )
-        flow = _make_flow("http://example.com/api", "application/json")
-        assert addon._matches_filter(flow) is True
-
-    def test_url_with_query_params(self):
-        """带查询参数的 URL 路径过滤应只看路径部分"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/"]),
-        )
-        flow = _make_flow("https://example.com/api/users?page=1&size=10", "application/json")
-        assert addon._matches_filter(flow) is True
-
-    def test_empty_path(self):
-        """空路径（根路径）"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(paths=["/api/"]),
-        )
-        flow = _make_flow("https://example.com", "application/json")
-        assert addon._matches_filter(flow) is False
-
-    def test_no_response_with_empty_content_type_filter(self):
-        """无响应但 Content-Type 过滤为空时应允许"""
-        addon = CaptureAddon(
-            storage_path=self.tmpdir,
-            filter_rules=FilterRules(domains=["example.com"]),
-        )
-        flow = _make_flow_no_response("https://example.com/api")
-        assert addon._matches_filter(flow) is True
+        flow = _make_flow("http:///api/data", "application/json")
+        # 空主机名不匹配黑名单，通过域名检查
+        assert addon._should_capture(flow) is True

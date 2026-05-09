@@ -1,339 +1,452 @@
 """Traffic Interceptor 模块测试
 
 测试 TrafficInterceptor 类的核心功能：
-- ProxyConfig 数据类
-- 字典到 CapturedRequest 的转换
-- 过滤规则设置
-- 步骤 ID 管理
-- 回调注册
-- 启动/停止状态管理
+- start_recording / stop_recording 状态管理
+- get_captured_requests() 从 JSON 文件读取并过滤
+- get_stats() 统计信息
+- 4 层过滤逻辑
+- 用户自定义域名白名单/黑名单
+- 时间范围过滤
 """
 
-import asyncio
-import base64
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+import json
+import os
+import tempfile
+from datetime import datetime, timedelta
 
 import pytest
 
 import sys
-import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src"))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "addons"))
 
-from src.traffic_interceptor import ProxyConfig, TrafficInterceptor
-from src.models import CapturedRequest
-from capture_addon import FilterRules
+from src.traffic_interceptor import TrafficInterceptor
+from src.models import CapturedRequest, FilterRules
 
 
-class TestProxyConfig:
-    """ProxyConfig 数据类测试"""
+def _write_request_json(storage_path: str, request_data: dict) -> str:
+    """写入一个请求 JSON 文件到存储目录。
 
-    def test_default_values(self):
-        """默认配置值应正确"""
-        config = ProxyConfig()
-        assert config.listen_host == "0.0.0.0"
-        assert config.listen_port == 8080
-        assert config.storage_path == "./output/captures"
+    Args:
+        storage_path: 存储目录路径
+        request_data: 请求数据字典
 
-    def test_custom_values(self):
-        """自定义配置值应正确"""
-        config = ProxyConfig(
-            listen_host="127.0.0.1",
-            listen_port=9090,
-            storage_path="/tmp/captures",
-        )
-        assert config.listen_host == "127.0.0.1"
-        assert config.listen_port == 9090
-        assert config.storage_path == "/tmp/captures"
+    Returns:
+        写入的文件路径
+    """
+    filepath = os.path.join(storage_path, f"{request_data['id']}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(request_data, f, ensure_ascii=False, indent=2)
+    return filepath
 
 
-class TestDictToCapturedRequest:
-    """测试字典到 CapturedRequest 的转换"""
-
-    def test_basic_conversion(self):
-        """基本字典应正确转换为 CapturedRequest"""
-        data = {
-            "id": "test-id-001",
-            "timestamp": "2024-01-15T10:30:00",
-            "operation_step_id": "step-001",
-            "method": "GET",
-            "url": "https://api.example.com/users",
-            "headers": {"Authorization": "Bearer token123"},
-            "body": None,
-            "response_status": 200,
-            "response_headers": {"Content-Type": "application/json"},
-            "response_body": base64.b64encode(b'{"users": []}').decode("ascii"),
-            "is_decrypted": True,
-        }
-
-        result = TrafficInterceptor._dict_to_captured_request(data)
-
-        assert isinstance(result, CapturedRequest)
-        assert result.id == "test-id-001"
-        assert result.timestamp == datetime(2024, 1, 15, 10, 30, 0)
-        assert result.operation_step_id == "step-001"
-        assert result.method == "GET"
-        assert result.url == "https://api.example.com/users"
-        assert result.headers == {"Authorization": "Bearer token123"}
-        assert result.body is None
-        assert result.response_status == 200
-        assert result.response_body == b'{"users": []}'
-        assert result.is_decrypted is True
-
-    def test_conversion_with_body(self):
-        """带请求体的字典应正确转换"""
-        body_content = b'{"name": "test"}'
-        data = {
-            "id": "test-id-002",
-            "timestamp": "2024-01-15T10:30:00",
-            "operation_step_id": "step-002",
-            "method": "POST",
-            "url": "https://api.example.com/users",
-            "headers": {"Content-Type": "application/json"},
-            "body": base64.b64encode(body_content).decode("ascii"),
-            "response_status": 201,
-            "response_headers": {},
-            "response_body": None,
-            "is_decrypted": True,
-        }
-
-        result = TrafficInterceptor._dict_to_captured_request(data)
-
-        assert result.body == body_content
-        assert result.response_body is None
-
-    def test_conversion_tls_failure(self):
-        """TLS 失败记录应正确转换"""
-        data = {
-            "id": "tls-fail-001",
-            "timestamp": "2024-01-15T10:30:00",
-            "operation_step_id": "",
-            "method": "CONNECT",
-            "url": "https://unknown-host.com/",
-            "headers": {},
-            "body": None,
-            "response_status": 0,
-            "response_headers": {},
-            "response_body": None,
-            "is_decrypted": False,
-        }
-
-        result = TrafficInterceptor._dict_to_captured_request(data)
-
-        assert result.is_decrypted is False
-        assert result.method == "CONNECT"
-        assert result.response_status == 0
-
-    def test_conversion_missing_optional_fields(self):
-        """缺少可选字段时应使用默认值"""
-        data = {
-            "id": "test-id-003",
-            "timestamp": "2024-01-15T10:30:00",
-            "method": "GET",
-            "url": "https://api.example.com/test",
-        }
-
-        result = TrafficInterceptor._dict_to_captured_request(data)
-
-        assert result.operation_step_id == ""
-        assert result.headers == {}
-        assert result.body is None
-        assert result.response_status == 0
-        assert result.response_headers == {}
-        assert result.response_body is None
-        assert result.is_decrypted is True
+def _make_request_data(
+    request_id: str = "test-001",
+    url: str = "https://api.example.com/v1/users",
+    method: str = "GET",
+    response_content_type: str = "application/json",
+    response_body: str = '{"users": []}',
+    timestamp: str = None,
+    is_decrypted: bool = True,
+) -> dict:
+    """创建请求数据字典。"""
+    if timestamp is None:
+        timestamp = datetime.now().isoformat()
+    return {
+        "id": request_id,
+        "timestamp": timestamp,
+        "method": method,
+        "url": url,
+        "headers": {"User-Agent": "TestApp/1.0"},
+        "body": None,
+        "response_status": 200,
+        "response_headers": {"Content-Type": response_content_type},
+        "response_body": response_body,
+        "is_decrypted": is_decrypted,
+    }
 
 
 class TestTrafficInterceptorState:
     """测试 TrafficInterceptor 状态管理"""
 
     def test_initial_state(self):
-        """初始状态应为未运行"""
-        interceptor = TrafficInterceptor()
-        assert interceptor.is_running is False
-        assert interceptor.addon is None
+        """初始状态应为未录制"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        assert interceptor.is_recording is False
 
-    def test_set_step_id_when_not_running(self):
-        """未运行时设置步骤 ID 不应报错（addon 为 None 时静默忽略）"""
-        interceptor = TrafficInterceptor()
-        # 不应抛出异常
-        interceptor.set_step_id("step-001")
+    def test_start_recording(self):
+        """start_recording 应将状态设为录制中"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        interceptor.start_recording()
+        assert interceptor.is_recording is True
 
-    def test_on_request_captured_registers_callback(self):
-        """回调注册应正确保存"""
-        interceptor = TrafficInterceptor()
-        callback = MagicMock()
-        interceptor.on_request_captured(callback)
-        assert callback in interceptor._callbacks
+    def test_stop_recording(self):
+        """stop_recording 应将状态设为未录制"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        interceptor.start_recording()
+        interceptor.stop_recording()
+        assert interceptor.is_recording is False
 
-    def test_multiple_callbacks(self):
-        """应支持注册多个回调"""
-        interceptor = TrafficInterceptor()
-        cb1 = MagicMock()
-        cb2 = MagicMock()
-        interceptor.on_request_captured(cb1)
-        interceptor.on_request_captured(cb2)
-        assert len(interceptor._callbacks) == 2
+    def test_start_recording_already_recording(self):
+        """已在录制时再次 start_recording 应抛出 RuntimeError"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        interceptor.start_recording()
+        with pytest.raises(RuntimeError, match="Already recording"):
+            interceptor.start_recording()
 
+    def test_stop_recording_not_recording(self):
+        """未在录制时 stop_recording 应抛出 RuntimeError"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        with pytest.raises(RuntimeError, match="Not recording"):
+            interceptor.stop_recording()
 
-class TestTrafficInterceptorWithMockAddon:
-    """使用 mock addon 测试 TrafficInterceptor 的方法"""
+    def test_filter_rules_property(self):
+        """filter_rules 属性应可读写"""
+        tmpdir = tempfile.mkdtemp()
+        rules = FilterRules(domain_blacklist=["bad.com"])
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        assert interceptor.filter_rules.domain_blacklist == ["bad.com"]
 
-    def setup_method(self):
-        """为每个测试创建带 mock addon 的 interceptor"""
-        self.interceptor = TrafficInterceptor()
-        self.interceptor._addon = MagicMock()
-        self.interceptor._running = True
-
-    @pytest.mark.asyncio
-    async def test_set_filter(self):
-        """set_filter 应更新 addon 的过滤规则"""
-        rules = FilterRules(domains=["api.example.com"])
-        await self.interceptor.set_filter(rules)
-        assert self.interceptor._addon.filter_rules == rules
-
-    @pytest.mark.asyncio
-    async def test_set_filter_not_running(self):
-        """未运行时 set_filter 应抛出 RuntimeError"""
-        interceptor = TrafficInterceptor()
-        rules = FilterRules(domains=["api.example.com"])
-        with pytest.raises(RuntimeError, match="not running"):
-            await interceptor.set_filter(rules)
-
-    def test_set_step_id_delegates_to_addon(self):
-        """set_step_id 应委托给 addon"""
-        self.interceptor.set_step_id("step-123")
-        self.interceptor._addon.set_step_id.assert_called_once_with("step-123")
-
-    def test_set_step_id_none(self):
-        """set_step_id(None) 应委托给 addon"""
-        self.interceptor.set_step_id(None)
-        self.interceptor._addon.set_step_id.assert_called_once_with(None)
-
-    @pytest.mark.asyncio
-    async def test_get_captured_requests(self):
-        """get_captured_requests 应转换 addon 返回的字典列表"""
-        self.interceptor._addon.get_captured_requests.return_value = [
-            {
-                "id": "req-001",
-                "timestamp": "2024-01-15T10:30:00",
-                "operation_step_id": "step-001",
-                "method": "GET",
-                "url": "https://api.example.com/data",
-                "headers": {},
-                "body": None,
-                "response_status": 200,
-                "response_headers": {},
-                "response_body": None,
-                "is_decrypted": True,
-            }
-        ]
-
-        results = await self.interceptor.get_captured_requests()
-
-        assert len(results) == 1
-        assert isinstance(results[0], CapturedRequest)
-        assert results[0].id == "req-001"
-        assert results[0].method == "GET"
-
-    @pytest.mark.asyncio
-    async def test_get_captured_requests_empty(self):
-        """无捕获请求时应返回空列表"""
-        self.interceptor._addon.get_captured_requests.return_value = []
-        results = await self.interceptor.get_captured_requests()
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_get_captured_requests_not_running(self):
-        """未运行时 get_captured_requests 应抛出 RuntimeError"""
-        interceptor = TrafficInterceptor()
-        with pytest.raises(RuntimeError, match="not running"):
-            await interceptor.get_captured_requests()
-
-    @pytest.mark.asyncio
-    async def test_clear(self):
-        """clear 应调用 addon 的 clear 方法"""
-        await self.interceptor.clear()
-        self.interceptor._addon.clear.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_clear_not_running(self):
-        """未运行时 clear 应抛出 RuntimeError"""
-        interceptor = TrafficInterceptor()
-        with pytest.raises(RuntimeError, match="not running"):
-            await interceptor.clear()
-
-    @pytest.mark.asyncio
-    async def test_start_already_running(self):
-        """已运行时再次 start 应抛出 RuntimeError"""
-        config = ProxyConfig()
-        with pytest.raises(RuntimeError, match="already running"):
-            await self.interceptor.start(config)
-
-    @pytest.mark.asyncio
-    async def test_stop_not_running(self):
-        """未运行时 stop 应抛出 RuntimeError"""
-        interceptor = TrafficInterceptor()
-        with pytest.raises(RuntimeError, match="not running"):
-            await interceptor.stop()
+        new_rules = FilterRules(domain_blacklist=["worse.com"])
+        interceptor.filter_rules = new_rules
+        assert interceptor.filter_rules.domain_blacklist == ["worse.com"]
 
 
-class TestCallbackNotification:
-    """测试回调通知机制"""
+class TestGetCapturedRequests:
+    """测试 get_captured_requests() 方法"""
 
-    def test_notify_callbacks(self):
-        """_notify_callbacks 应调用所有注册的回调"""
-        interceptor = TrafficInterceptor()
-        cb1 = MagicMock()
-        cb2 = MagicMock()
-        interceptor.on_request_captured(cb1)
-        interceptor.on_request_captured(cb2)
+    def test_empty_directory(self):
+        """空目录应返回空列表"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert result == []
 
-        request = CapturedRequest(
-            id="test-001",
-            timestamp=datetime(2024, 1, 15, 10, 30, 0),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/test",
-            headers={},
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=None,
-            is_decrypted=True,
+    def test_nonexistent_directory(self):
+        """不存在的目录应返回空列表"""
+        interceptor = TrafficInterceptor(storage_path="/nonexistent/path")
+        result = interceptor.get_captured_requests()
+        assert result == []
+
+    def test_reads_json_files(self):
+        """应正确读取 JSON 文件并转换为 CapturedRequest"""
+        tmpdir = tempfile.mkdtemp()
+        data = _make_request_data(
+            request_id="req-001",
+            url="https://api.example.com/v1/users",
+            response_content_type="application/json",
         )
+        _write_request_json(tmpdir, data)
 
-        interceptor._notify_callbacks(request)
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
 
-        cb1.assert_called_once_with(request)
-        cb2.assert_called_once_with(request)
+        assert len(result) == 1
+        assert isinstance(result[0], CapturedRequest)
+        assert result[0].id == "req-001"
+        assert result[0].method == "GET"
+        assert result[0].url == "https://api.example.com/v1/users"
 
-    def test_callback_exception_does_not_propagate(self):
-        """回调异常不应影响其他回调"""
-        interceptor = TrafficInterceptor()
-        cb1 = MagicMock(side_effect=ValueError("callback error"))
-        cb2 = MagicMock()
-        interceptor.on_request_captured(cb1)
-        interceptor.on_request_captured(cb2)
+    def test_skips_invalid_json(self):
+        """无效 JSON 文件应被跳过"""
+        tmpdir = tempfile.mkdtemp()
+        # 写入有效文件
+        data = _make_request_data(request_id="valid-001")
+        _write_request_json(tmpdir, data)
+        # 写入无效文件
+        with open(os.path.join(tmpdir, "invalid.json"), "w") as f:
+            f.write("not valid json{{{")
 
-        request = CapturedRequest(
-            id="test-001",
-            timestamp=datetime(2024, 1, 15, 10, 30, 0),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/test",
-            headers={},
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=None,
-            is_decrypted=True,
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "valid-001"
+
+    def test_skips_non_json_files(self):
+        """非 .json 文件应被跳过"""
+        tmpdir = tempfile.mkdtemp()
+        data = _make_request_data(request_id="req-001")
+        _write_request_json(tmpdir, data)
+        # 写入非 JSON 文件
+        with open(os.path.join(tmpdir, "readme.txt"), "w") as f:
+            f.write("not a json file")
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+
+    def test_sorted_by_timestamp(self):
+        """结果应按时间戳排序"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="req-002",
+            timestamp="2024-01-15T10:30:00",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="req-001",
+            timestamp="2024-01-15T10:00:00",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="req-003",
+            timestamp="2024-01-15T11:00:00",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert [r.id for r in result] == ["req-001", "req-002", "req-003"]
+
+
+class TestFourLayerFiltering:
+    """测试 4 层过滤逻辑"""
+
+    def test_static_resource_filtered(self):
+        """静态资源（image/、font/ 等）应被过滤"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="img-001",
+            url="https://cdn.example.com/api/image.png",
+            response_content_type="image/png",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="api-001",
+            url="https://api.example.com/v1/users",
+            response_content_type="application/json",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "api-001"
+
+    def test_css_and_js_filtered(self):
+        """text/css 和 application/javascript 应被过滤"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="css-001",
+            url="https://cdn.example.com/api/style.css",
+            response_content_type="text/css",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="js-001",
+            url="https://cdn.example.com/api/app.js",
+            response_content_type="application/javascript",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 0
+
+    def test_domain_blacklist_filtered(self):
+        """域名黑名单中的请求应被过滤"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="sdk-001",
+            url="https://analytics.oceanengine.com/api/report",
+            response_content_type="application/json",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="api-001",
+            url="https://api.myapp.com/v1/data",
+            response_content_type="application/json",
+        ))
+
+        rules = FilterRules(
+            domain_blacklist=["analytics.oceanengine.com"],
         )
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "api-001"
 
-        # 不应抛出异常
-        interceptor._notify_callbacks(request)
+    def test_path_blacklist_filtered(self):
+        """路径黑名单中的请求应被过滤"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="sdk-001",
+            url="https://api.example.com/sdk/app/init",
+            response_content_type="application/json",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="api-001",
+            url="https://api.example.com/v1/users",
+            response_content_type="application/json",
+        ))
 
-        # cb2 仍应被调用
-        cb2.assert_called_once_with(request)
+        rules = FilterRules(
+            path_blacklist=["/sdk/app/"],
+        )
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "api-001"
+
+    def test_api_whitelist_json_content_type(self):
+        """Content-Type 含 json 的请求应通过 API 白名单"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="json-001",
+            url="https://api.example.com/custom/endpoint",
+            response_content_type="application/json",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "json-001"
+
+    def test_api_whitelist_path_pattern(self):
+        """路径匹配 API 模式的请求应通过 API 白名单"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="api-001",
+            url="https://api.example.com/api/users",
+            response_content_type="text/plain",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "api-001"
+
+    def test_non_api_non_json_filtered(self):
+        """既不是 JSON 也不匹配 API 路径模式的请求应被过滤"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="html-001",
+            url="https://www.example.com/page/about",
+            response_content_type="text/html",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 0
+
+
+class TestUserDomainFilters:
+    """测试用户自定义域名白名单/黑名单"""
+
+    def test_user_domain_whitelist(self):
+        """设置用户域名白名单后，只保留白名单中的域名"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="allowed-001",
+            url="https://api.myapp.com/v1/data",
+            response_content_type="application/json",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="blocked-001",
+            url="https://api.other.com/v1/data",
+            response_content_type="application/json",
+        ))
+
+        rules = FilterRules(user_domain_whitelist=["api.myapp.com"])
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "allowed-001"
+
+    def test_user_domain_blacklist(self):
+        """设置用户域名黑名单后，排除黑名单中的域名"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="allowed-001",
+            url="https://api.myapp.com/v1/data",
+            response_content_type="application/json",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="blocked-001",
+            url="https://api.blocked.com/v1/data",
+            response_content_type="application/json",
+        ))
+
+        rules = FilterRules(user_domain_blacklist=["api.blocked.com"])
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "allowed-001"
+
+    def test_user_domain_whitelist_subdomain(self):
+        """用户域名白名单应支持子域名匹配"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="sub-001",
+            url="https://sub.myapp.com/v1/data",
+            response_content_type="application/json",
+        ))
+
+        rules = FilterRules(user_domain_whitelist=["myapp.com"])
+        interceptor = TrafficInterceptor(storage_path=tmpdir, filter_rules=rules)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].id == "sub-001"
+
+
+class TestGetStats:
+    """测试 get_stats() 方法"""
+
+    def test_empty_stats(self):
+        """空目录的统计信息"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        stats = interceptor.get_stats()
+        assert stats["total_files"] == 0
+        assert stats["total_filtered"] == 0
+        assert stats["is_recording"] is False
+        assert stats["start_time"] is None
+        assert stats["stop_time"] is None
+
+    def test_stats_with_data(self):
+        """有数据时的统计信息"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="api-001",
+            url="https://api.example.com/v1/users",
+            response_content_type="application/json",
+        ))
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="img-001",
+            url="https://cdn.example.com/image.png",
+            response_content_type="image/png",
+        ))
+
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        stats = interceptor.get_stats()
+        assert stats["total_files"] == 2
+        assert stats["total_filtered"] == 1
+
+    def test_stats_recording_state(self):
+        """录制状态应反映在统计信息中"""
+        tmpdir = tempfile.mkdtemp()
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        interceptor.start_recording()
+        stats = interceptor.get_stats()
+        assert stats["is_recording"] is True
+        assert stats["start_time"] is not None
+
+
+class TestHTTPSDecryptionFailure:
+    """测试 HTTPS 解密失败标记"""
+
+    def test_undecrypted_request_preserved(self):
+        """is_decrypted=False 的请求应被保留（通过 API 白名单路径匹配）"""
+        tmpdir = tempfile.mkdtemp()
+        _write_request_json(tmpdir, _make_request_data(
+            request_id="tls-fail-001",
+            url="https://secure.example.com/api/data",
+            method="CONNECT",
+            response_content_type="",
+            response_body=None,
+            is_decrypted=False,
+        ))
+
+        # 使用空过滤规则（允许所有通过白名单的）
+        # 注意：CONNECT 请求的 URL 含 /api/ 所以会通过路径白名单
+        interceptor = TrafficInterceptor(storage_path=tmpdir)
+        result = interceptor.get_captured_requests()
+        assert len(result) == 1
+        assert result[0].is_decrypted is False

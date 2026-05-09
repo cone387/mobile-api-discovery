@@ -1,421 +1,275 @@
-"""主协调器 - 串联三阶段流程、管理模块生命周期
+"""主协调器 - 协调四阶段流程
 
 CaptureSystem 是系统的顶层协调器，负责：
-- 阶段 1: 设备操控与流量捕获（Device_Controller + Traffic_Interceptor）
-- 阶段 2: 接口分析与分类（API_Analyzer + Code_Generator）
-- 阶段 3: 分路径数据采集（Batch_Crawler / Replay_Controller）
-- 模块生命周期管理（启动、停止、资源清理）
-- 汇总报告生成
+- 阶段 1: RequirementCollector - 需求收集与引导
+- 阶段 2: EnvironmentManager - 环境准备（adb + mitmdump）
+- 阶段 3: TrafficInterceptor - 流量录制控制
+- 阶段 4: APIAnalyzer + ReportGenerator - 分析与报告生成
+
+状态流转：
+  IDLE -> COLLECTING -> ENVIRONMENT_READY -> RECORDING -> ANALYZING -> COMPLETED
 """
 
-import asyncio
 import logging
-from dataclasses import dataclass, field
-from typing import List, Optional
+import os
+from enum import Enum
+from typing import Optional
 
 from src.api_analyzer import APIAnalyzer
-from src.batch_crawler import BatchCrawler
-from src.code_generator import CodeGenerator
-from src.device_controller import DeviceController
+from src.environment_manager import EnvironmentManager
 from src.models import (
-    APIAnalysisResult,
-    CapturedRequest,
-    CrawlConfig,
-    CrawlStats,
-    CrawlTask,
-    GeneratedCode,
-    OperationSequence,
+    AnalysisReport,
+    CaptureTarget,
+    FilterRules,
 )
-from src.replay_controller import ReplayController
-from src.report_generator import ReportGenerator, SummaryReport
-from src.traffic_interceptor import ProxyConfig, TrafficInterceptor
+from src.report_generator import ReportGenerator
+from src.requirement_collector import RequirementCollector
+from src.traffic_interceptor import TrafficInterceptor
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class CaptureSystemConfig:
-    """系统配置"""
+class CapturePhase(Enum):
+    """系统阶段枚举"""
 
-    # 代理配置
-    proxy_host: str = "0.0.0.0"
-    proxy_port: int = 8080
-    storage_path: str = "./output/captures"
-
-    # 采集配置
-    crawl_concurrency: int = 3
-    crawl_interval_ms: int = 500
-    crawl_failure_threshold: int = 5
-    crawl_max_rounds: int = 10
-    crawl_round_interval_ms: int = 3000
-
-    # 输出配置
-    output_dir: str = "./output"
-    report_path: str = "./output/analysis/report.md"
-
-    # 代码生成配置
-    template_dir: Optional[str] = None
-    verify_timeout: int = 30
+    IDLE = "idle"
+    COLLECTING = "collecting"
+    ENVIRONMENT_READY = "environment_ready"
+    RECORDING = "recording"
+    ANALYZING = "analyzing"
+    COMPLETED = "completed"
 
 
 class CaptureSystem:
-    """主协调器 - 串联三阶段流程、管理模块生命周期
+    """主协调器 - 协调四阶段工作流
+
+    四阶段流程：
+    1. 需求收集：通过 RequirementCollector 引导用户明确抓取目标
+    2. 环境准备：通过 EnvironmentManager 配置 adb + mitmdump
+    3. 流量录制：通过 TrafficInterceptor 管理录制状态
+    4. 分析报告：通过 APIAnalyzer + ReportGenerator 生成报告
 
     使用示例:
-        config = CaptureSystemConfig(proxy_port=8080)
-        system = CaptureSystem(config)
+        system = CaptureSystem(storage_path="./output/captures")
 
-        # 执行完整流程
-        report = await system.run_capture(
-            app_package="com.example.app",
-            device_id="emulator-5554",
-            operations=operation_sequence,
-        )
+        # 阶段 1: 需求收集
+        status = system.collect_requirements("抓取盒马的商品列表，操作首页")
+        if status.is_complete:
+            # 阶段 2: 环境准备（由 AI 代理调用 EnvironmentManager）
+            system.mark_environment_ready()
 
-        # 或分阶段执行
-        await system.start()
-        await system.run_phase1_capture(app_package, device_id, operations)
-        analyses = await system.run_analysis()
-        await system.run_collection(analyses)
-        await system.stop()
+            # 阶段 3: 用户操作 App
+            system.start_recording()
+            # ... 用户操作 ...
+            system.stop_recording()  # 自动触发阶段 4
+
+            # 获取报告
+            print(system.report_summary)
+            print(system.report_path)
     """
 
-    def __init__(self, config: CaptureSystemConfig) -> None:
+    def __init__(
+        self,
+        storage_path: str = "./output/captures",
+        output_dir: str = "./output/analysis",
+        filter_rules: Optional[FilterRules] = None,
+    ) -> None:
         """初始化 CaptureSystem
 
         Args:
-            config: 系统配置
+            storage_path: 流量 JSON 文件存储目录
+            output_dir: 分析报告输出目录
+            filter_rules: 过滤规则，为 None 时使用默认规则
         """
-        self._config = config
+        self._storage_path = storage_path
+        self._output_dir = output_dir
 
         # 初始化各模块
-        self._device_controller = DeviceController()
-        self._traffic_interceptor = TrafficInterceptor()
+        self._requirement_collector = RequirementCollector()
+        self._environment_manager = EnvironmentManager()
+        self._traffic_interceptor = TrafficInterceptor(
+            storage_path=storage_path,
+            filter_rules=filter_rules,
+        )
         self._api_analyzer = APIAnalyzer()
-        self._code_generator = CodeGenerator(
-            template_dir=config.template_dir,
-            verify_timeout=config.verify_timeout,
-        )
-        self._batch_crawler = BatchCrawler(
-            storage_path=f"{config.output_dir}/data"
-        )
-        self._replay_controller = ReplayController(
-            device_controller=self._device_controller,
-            traffic_interceptor=self._traffic_interceptor,
-        )
         self._report_generator = ReportGenerator()
 
         # 状态
-        self._started = False
-        self._captured_requests: List[CapturedRequest] = []
-        self._analyses: List[APIAnalysisResult] = []
-        self._generated_codes: dict[str, GeneratedCode] = {}
+        self._phase = CapturePhase.IDLE
+        self._target: Optional[CaptureTarget] = None
+        self._report: Optional[AnalysisReport] = None
+        self._report_path: Optional[str] = None
 
     @property
-    def is_started(self) -> bool:
-        """系统是否已启动"""
-        return self._started
+    def phase(self) -> CapturePhase:
+        """当前阶段"""
+        return self._phase
 
     @property
-    def device_controller(self) -> DeviceController:
-        """获取设备控制器实例"""
-        return self._device_controller
+    def target(self) -> Optional[CaptureTarget]:
+        """当前抓取目标"""
+        return self._target
+
+    @property
+    def requirement_collector(self) -> RequirementCollector:
+        """需求收集器实例"""
+        return self._requirement_collector
+
+    @property
+    def environment_manager(self) -> EnvironmentManager:
+        """环境管理器实例"""
+        return self._environment_manager
 
     @property
     def traffic_interceptor(self) -> TrafficInterceptor:
-        """获取流量拦截器实例"""
+        """流量拦截器实例"""
         return self._traffic_interceptor
 
     @property
+    def api_analyzer(self) -> APIAnalyzer:
+        """接口分析器实例"""
+        return self._api_analyzer
+
+    @property
     def report_generator(self) -> ReportGenerator:
-        """获取报告生成器实例"""
+        """报告生成器实例"""
         return self._report_generator
 
-    async def start(self) -> None:
-        """启动系统，初始化各模块
+    @property
+    def report(self) -> Optional[AnalysisReport]:
+        """分析报告（分析完成后可用）"""
+        return self._report
 
-        启动流量拦截器代理服务器。
+    @property
+    def report_path(self) -> Optional[str]:
+        """报告文件路径（分析完成后可用）"""
+        return self._report_path
 
-        Raises:
-            RuntimeError: 如果系统已启动
-        """
-        if self._started:
-            raise RuntimeError("CaptureSystem is already started")
-
-        logger.info("启动 CaptureSystem...")
-
-        # 启动流量拦截器
-        proxy_config = ProxyConfig(
-            listen_host=self._config.proxy_host,
-            listen_port=self._config.proxy_port,
-            storage_path=self._config.storage_path,
+    @property
+    def report_summary(self) -> Optional[str]:
+        """报告摘要文本（分析完成后可用）"""
+        if self._report is None:
+            return None
+        return (
+            f"分析完成！\n"
+            f"- 总捕获请求数: {self._report.total_captured}\n"
+            f"- 分析接口数: {self._report.total_analyzed}\n"
+            f"- 匹配目标接口数: {self._report.target_matched}\n"
+            f"- 报告路径: {self._report_path}"
         )
-        await self._traffic_interceptor.start(proxy_config)
 
-        self._started = True
-        logger.info("CaptureSystem 启动完成")
+    def collect_requirements(self, user_message: str) -> "RequirementStatus":
+        """阶段 1: 收集用户需求
 
-    async def stop(self) -> None:
-        """停止系统，清理资源
-
-        停止流量拦截器并断开设备连接。
-
-        Raises:
-            RuntimeError: 如果系统未启动
-        """
-        if not self._started:
-            raise RuntimeError("CaptureSystem is not started")
-
-        logger.info("停止 CaptureSystem...")
-
-        # 停止流量拦截器
-        try:
-            await self._traffic_interceptor.stop()
-        except RuntimeError:
-            pass  # 可能已经停止
-
-        # 断开设备连接
-        try:
-            await self._device_controller.disconnect()
-        except Exception:
-            pass  # 可能未连接
-
-        self._started = False
-        logger.info("CaptureSystem 已停止")
-
-    async def run_capture(
-        self,
-        app_package: str,
-        device_id: str,
-        operations: OperationSequence,
-    ) -> SummaryReport:
-        """执行完整的三阶段流程
-
-        阶段 1: 设备操控与流量捕获
-        阶段 2: 接口分析与分类
-        阶段 3: 分路径数据采集
+        解析用户输入，提取抓取目标信息。
+        当信息完整时自动进入 COLLECTING 完成状态。
 
         Args:
-            app_package: 目标 App 包名
-            device_id: 设备标识
-            operations: 操作序列
+            user_message: 用户的自然语言输入
 
         Returns:
-            SummaryReport 汇总报告
+            RequirementStatus: 包含是否完整、缺失字段和提示消息
         """
-        try:
-            # 启动系统
-            await self.start()
+        from src.models import RequirementStatus
 
-            # 阶段 1: 捕获
-            await self._run_phase1_capture(app_package, device_id, operations)
+        self._phase = CapturePhase.COLLECTING
+        status = self._requirement_collector.analyze_input(user_message)
 
-            # 阶段 2: 分析
-            analyses = await self.run_analysis()
+        if status.is_complete:
+            # 从用户输入中提取目标（重新提取以获取完整对象）
+            self._target = self._requirement_collector._extract_target(user_message)
 
-            # 阶段 3: 采集
-            await self.run_collection(analyses)
+        return status
 
-            # 生成报告
-            report = self._report_generator.generate_summary(analyses)
-            self._report_generator.save_report(report, self._config.report_path)
-
-            logger.info(
-                f"流程完成: 共 {report.total_count} 个接口, "
-                f"{report.reproducible_count} 个可复现, "
-                f"{report.complex_count} 个复杂接口"
-            )
-
-            return report
-
-        finally:
-            # 确保资源清理
-            if self._started:
-                await self.stop()
-
-    async def _run_phase1_capture(
-        self,
-        app_package: str,
-        device_id: str,
-        operations: OperationSequence,
-    ) -> None:
-        """阶段 1: 设备操控与流量捕获
-
-        连接设备、启动 App、执行操作序列、捕获流量。
+    def set_target(self, target: CaptureTarget) -> None:
+        """直接设置抓取目标（跳过自然语言解析）
 
         Args:
-            app_package: 目标 App 包名
-            device_id: 设备标识
-            operations: 操作序列
+            target: 完整的抓取目标
+
+        Raises:
+            ValueError: 如果目标信息不完整
         """
-        logger.info(f"阶段 1: 设备操控与流量捕获 (App: {app_package})")
+        if not self._requirement_collector.is_complete(target):
+            missing = self._requirement_collector.get_missing_fields(target)
+            raise ValueError(f"目标信息不完整，缺少: {', '.join(missing)}")
 
-        # 连接设备
-        connection_result = await self._device_controller.connect(device_id)
-        if not connection_result.success:
-            raise RuntimeError(
-                f"设备连接失败: {connection_result.error_message} "
-                f"(设备: {device_id})"
-            )
+        self._target = target
+        self._phase = CapturePhase.COLLECTING
 
-        # 启动 App
-        app_launched = await self._device_controller.launch_app(app_package)
-        if not app_launched:
-            raise RuntimeError(f"App 启动失败: {app_package}")
+    def mark_environment_ready(self) -> None:
+        """标记环境准备完成，进入等待录制状态
 
-        # 执行操作序列，同步更新步骤 ID
-        for step in operations.steps:
-            self._traffic_interceptor.set_step_id(step.id)
-            await self._device_controller.execute_step(step)
+        由 AI 代理在完成 EnvironmentManager 的所有步骤后调用。
 
-        # 清除步骤 ID
-        self._traffic_interceptor.set_step_id(None)
+        Raises:
+            RuntimeError: 如果目标未设置
+        """
+        if self._target is None:
+            raise RuntimeError("请先完成需求收集（设置抓取目标）")
+
+        self._phase = CapturePhase.ENVIRONMENT_READY
+        logger.info("环境准备完成，等待用户开始操作 App")
+
+    def start_recording(self) -> None:
+        """阶段 3: 开始流量录制
+
+        标记录制开始，TrafficInterceptor 将记录此后的请求。
+
+        Raises:
+            RuntimeError: 如果环境未就绪
+        """
+        if self._phase not in (CapturePhase.ENVIRONMENT_READY, CapturePhase.COLLECTING):
+            if self._phase == CapturePhase.RECORDING:
+                raise RuntimeError("已在录制中")
+            if self._target is None:
+                raise RuntimeError("请先完成需求收集和环境准备")
+
+        self._traffic_interceptor.start_recording()
+        self._phase = CapturePhase.RECORDING
+        logger.info("流量录制已开始，请在手机上操作 App")
+
+    def stop_recording(self) -> str:
+        """停止录制并自动触发分析流程
+
+        停止 TrafficInterceptor 的录制，读取捕获的请求，
+        调用 APIAnalyzer 进行分析，调用 ReportGenerator 生成报告。
+
+        Returns:
+            报告摘要文本
+
+        Raises:
+            RuntimeError: 如果未在录制中
+        """
+        if self._phase != CapturePhase.RECORDING:
+            raise RuntimeError("未在录制中，无法停止")
+
+        # 停止录制
+        self._traffic_interceptor.stop_recording()
+        self._phase = CapturePhase.ANALYZING
+        logger.info("流量录制已停止，开始分析...")
 
         # 获取捕获的请求
-        self._captured_requests = (
-            await self._traffic_interceptor.get_captured_requests()
+        captured_requests = self._traffic_interceptor.get_captured_requests()
+        logger.info(f"共捕获 {len(captured_requests)} 个有效请求")
+
+        # 分析
+        target = self._target or CaptureTarget()
+        self._report = self._api_analyzer.analyze_all(captured_requests, target)
+
+        # 生成报告
+        os.makedirs(self._output_dir, exist_ok=True)
+        self._report_path = self._report_generator.generate(
+            self._report, self._output_dir
         )
 
-        logger.info(f"阶段 1 完成: 捕获 {len(self._captured_requests)} 个请求")
-
-    async def run_analysis(self) -> List[APIAnalysisResult]:
-        """阶段 2: 接口分析与分类
-
-        对捕获的请求进行分析，判定可复现性，为可复现接口生成代码。
-
-        Returns:
-            分析结果列表
-        """
-        logger.info("阶段 2: 接口分析与分类")
-
-        # 批量分析
-        self._analyses = await self._api_analyzer.analyze_batch(
-            self._captured_requests
+        # 保存样本文件
+        samples_dir = os.path.join(self._output_dir, "samples")
+        self._report_generator.save_samples(
+            captured_requests, self._report.results, samples_dir
         )
 
-        # 为可复现接口生成代码
-        for analysis in self._analyses:
-            if analysis.reproducibility == "reproducible":
-                # 找到对应的原始请求
-                request = self._find_request(analysis.request_id)
-                if request:
-                    generated = self._code_generator.generate(analysis, request)
-                    self._generated_codes[analysis.request_id] = generated
+        self._phase = CapturePhase.COMPLETED
+        logger.info(f"分析完成，报告已保存到: {self._report_path}")
 
-        logger.info(
-            f"阶段 2 完成: {len(self._analyses)} 个接口已分析, "
-            f"{len(self._generated_codes)} 个代码已生成"
-        )
-
-        return self._analyses
-
-    async def run_collection(self, analyses: List[APIAnalysisResult]) -> None:
-        """阶段 3: 分路径数据采集
-
-        根据分析结果，对可复现接口使用批量采集，对复杂接口使用回放采集。
-
-        Args:
-            analyses: 分析结果列表
-        """
-        logger.info("阶段 3: 分路径数据采集")
-
-        for analysis in analyses:
-            if analysis.reproducibility == "reproducible":
-                # 可复现接口 -> 批量采集
-                generated = self._generated_codes.get(analysis.request_id)
-                if generated and generated.verification_status != "failed":
-                    await self._start_batch_crawl(analysis, generated)
-            elif analysis.reproducibility == "complex":
-                # 复杂接口 -> 回放采集
-                self._replay_controller.register_api(analysis)
-
-        logger.info("阶段 3 完成")
-
-    async def _start_batch_crawl(
-        self, analysis: APIAnalysisResult, generated: GeneratedCode
-    ) -> None:
-        """为可复现接口启动批量采集任务
-
-        Args:
-            analysis: 接口分析结果
-            generated: 生成的代码
-        """
-        config = CrawlConfig(
-            concurrency=self._config.crawl_concurrency,
-            interval_ms=self._config.crawl_interval_ms,
-            max_rounds=self._config.crawl_max_rounds,
-            failure_threshold=self._config.crawl_failure_threshold,
-            round_interval_ms=self._config.crawl_round_interval_ms,
-        )
-
-        task = CrawlTask(
-            id=f"crawl-{analysis.request_id}",
-            api_id=analysis.request_id,
-            mode="batch",
-            config=config,
-            status="running",
-            stats=CrawlStats(
-                total_requests=0,
-                success_count=0,
-                failure_count=0,
-                consecutive_failures=0,
-                data_collected=0,
-            ),
-        )
-
-        # 创建请求函数（此处为占位，实际需要执行生成的代码）
-        async def request_fn():
-            # 实际实现中会执行 generated.code
-            return (False, None, 500)
-
-        try:
-            await self._batch_crawler.start_task(task, request_fn)
-        except Exception as e:
-            logger.warning(f"批量采集启动失败 ({analysis.endpoint}): {e}")
-
-    def _find_request(self, request_id: str) -> Optional[CapturedRequest]:
-        """根据 request_id 查找原始请求
-
-        Args:
-            request_id: 请求 ID
-
-        Returns:
-            匹配的 CapturedRequest，未找到返回 None
-        """
-        for request in self._captured_requests:
-            if request.id == request_id:
-                return request
-        return None
-
-    def get_api_detail(self, request_id: str) -> Optional[str]:
-        """获取接口详情的 Markdown 视图
-
-        Args:
-            request_id: 请求 ID
-
-        Returns:
-            Markdown 格式的详情字符串，未找到返回 None
-        """
-        # 查找分析结果
-        analysis = None
-        for a in self._analyses:
-            if a.request_id == request_id:
-                analysis = a
-                break
-
-        if analysis is None:
-            return None
-
-        # 获取生成的代码
-        generated_code = self._generated_codes.get(request_id)
-
-        # 获取采集状态
-        crawl_task = self._batch_crawler.get_task(f"crawl-{request_id}")
-        crawl_status = crawl_task.status if crawl_task else None
-
-        return self._report_generator.get_api_detail(
-            request_id=request_id,
-            analysis=analysis,
-            generated_code=generated_code,
-            crawl_status=crawl_status,
-        )
+        return self.report_summary or ""

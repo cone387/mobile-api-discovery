@@ -1,29 +1,32 @@
 """数据模型序列化/反序列化单元测试和属性测试（round-trip）
 
-**Validates: Requirements 1.4**
+**Validates: Requirements 3.6**
 
 使用 Hypothesis 属性测试验证所有数据模型的 round-trip 序列化：
 - Property 1: CapturedRequest round-trip (to_json/from_json, to_dict/from_dict)
-- Property 7: CrawlData round-trip (CrawlTask, CrawlConfig, CrawlStats)
-- 嵌套模型: OperationSequence, APIAnalysisResult, CrawlTask
+- 嵌套模型: APIAnalysisResult, AnalysisReport
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from src.models import (
+    CaptureTarget,
+    FilterRules,
     CapturedRequest,
-    OperationStep,
-    OperationSequence,
     ParameterInfo,
+    APIType,
     APIAnalysisResult,
-    GeneratedCode,
-    CrawlConfig,
-    CrawlStats,
-    CrawlTask,
+    DataLink,
+    AnalysisReport,
+    RequirementStatus,
+    ConnectionResult,
+    CertResult,
+    ProxyResult,
+    ProcessResult,
 )
 
 
@@ -40,7 +43,7 @@ safe_text = st.text(
     max_size=50,
 )
 
-# Strategy for JSON-serializable dict values (no bytes, no datetime)
+# Strategy for JSON-serializable dict values
 json_value = st.recursive(
     st.one_of(
         st.none(),
@@ -58,7 +61,7 @@ json_value = st.recursive(
 
 json_dict = st.dictionaries(safe_text, json_value, max_size=5)
 
-# Datetime strategy - use timezone-aware datetimes that survive isoformat round-trip
+# Datetime strategy
 safe_datetimes = st.datetimes(
     min_value=datetime(2000, 1, 1),
     max_value=datetime(2030, 12, 31),
@@ -71,41 +74,14 @@ def captured_request_strategy(draw):
     return CapturedRequest(
         id=draw(safe_text.filter(lambda x: len(x) > 0)),
         timestamp=draw(safe_datetimes),
-        operation_step_id=draw(safe_text),
         method=draw(st.sampled_from(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])),
         url=draw(safe_text),
         headers=draw(st.dictionaries(safe_text, safe_text, max_size=5)),
-        body=draw(st.none() | st.binary(max_size=200)),
+        body=draw(st.none() | safe_text),
         response_status=draw(st.integers(min_value=100, max_value=599)),
         response_headers=draw(st.dictionaries(safe_text, safe_text, max_size=5)),
-        response_body=draw(st.none() | st.binary(max_size=200)),
+        response_body=draw(st.none() | safe_text),
         is_decrypted=draw(st.booleans()),
-    )
-
-
-# Strategy for OperationStep
-@st.composite
-def operation_step_strategy(draw):
-    return OperationStep(
-        id=draw(safe_text.filter(lambda x: len(x) > 0)),
-        sequence_id=draw(safe_text),
-        action_type=draw(st.sampled_from(["click", "swipe", "input", "navigate", "wait"])),
-        target=draw(st.none() | safe_text),
-        parameters=draw(json_dict),
-        status=draw(st.sampled_from(["pending", "success", "failed", "skipped"])),
-        error_message=draw(st.none() | safe_text),
-    )
-
-
-# Strategy for OperationSequence (nested with OperationStep list)
-@st.composite
-def operation_sequence_strategy(draw):
-    return OperationSequence(
-        id=draw(safe_text.filter(lambda x: len(x) > 0)),
-        app_package=draw(safe_text),
-        intent_description=draw(safe_text),
-        steps=draw(st.lists(operation_step_strategy(), min_size=0, max_size=5)),
-        created_at=draw(safe_datetimes),
     )
 
 
@@ -115,81 +91,65 @@ def parameter_info_strategy(draw):
     return ParameterInfo(
         name=draw(safe_text),
         value_sample=draw(safe_text),
-        category=draw(st.sampled_from(["static", "session", "dynamic", "unknown"])),
+        category=draw(st.sampled_from(["static", "session", "dynamic"])),
         source=draw(st.sampled_from(["query", "header", "body", "cookie"])),
-        reasoning=draw(safe_text),
     )
 
 
-# Strategy for APIAnalysisResult (nested with ParameterInfo list)
+# Strategy for APIAnalysisResult
 @st.composite
 def api_analysis_result_strategy(draw):
     return APIAnalysisResult(
         request_id=draw(safe_text.filter(lambda x: len(x) > 0)),
         endpoint=draw(safe_text),
-        purpose=draw(safe_text),
+        api_type=draw(st.sampled_from(list(APIType))),
         parameters=draw(st.lists(parameter_info_strategy(), min_size=0, max_size=5)),
-        reproducibility=draw(st.sampled_from(["reproducible", "complex", "unknown"])),
-        reproducibility_reason=draw(safe_text),
-        confidence=draw(st.floats(min_value=0.0, max_value=1.0)),
+        has_signature=draw(st.booleans()),
+        signature_fields=draw(st.lists(safe_text, max_size=5)),
+        matches_target=draw(st.booleans()),
+        call_count=draw(st.integers(min_value=0, max_value=10000)),
     )
 
 
-# Strategy for GeneratedCode
+# Strategy for DataLink
 @st.composite
-def generated_code_strategy(draw):
-    return GeneratedCode(
-        api_id=draw(safe_text.filter(lambda x: len(x) > 0)),
-        code=draw(safe_text),
-        session_params=draw(st.lists(safe_text, max_size=5)),
-        verification_status=draw(st.sampled_from(["pending", "passed", "failed"])),
-        failure_reason=draw(st.none() | safe_text),
+def data_link_strategy(draw):
+    return DataLink(
+        source_endpoint=draw(safe_text),
+        target_endpoint=draw(safe_text),
+        link_field=draw(safe_text),
+        link_type=draw(st.sampled_from([
+            "list_to_detail", "list_to_media", "detail_to_media",
+        ])),
     )
 
 
-# Strategy for CrawlConfig
+# Strategy for AnalysisReport
 @st.composite
-def crawl_config_strategy(draw):
-    return CrawlConfig(
-        concurrency=draw(st.integers(min_value=1, max_value=100)),
-        interval_ms=draw(st.integers(min_value=0, max_value=60000)),
-        max_rounds=draw(st.integers(min_value=1, max_value=10000)),
-        failure_threshold=draw(st.integers(min_value=1, max_value=1000)),
-        round_interval_ms=draw(st.integers(min_value=0, max_value=300000)),
-    )
-
-
-# Strategy for CrawlStats
-@st.composite
-def crawl_stats_strategy(draw):
-    total = draw(st.integers(min_value=0, max_value=100000))
-    success = draw(st.integers(min_value=0, max_value=total))
-    failure = total - success
-    return CrawlStats(
-        total_requests=total,
-        success_count=success,
-        failure_count=failure,
-        consecutive_failures=draw(st.integers(min_value=0, max_value=failure if failure > 0 else 0)),
-        data_collected=draw(st.integers(min_value=0, max_value=success if success > 0 else 0)),
-    )
-
-
-# Strategy for CrawlTask (nested with CrawlConfig and CrawlStats)
-@st.composite
-def crawl_task_strategy(draw):
-    return CrawlTask(
-        id=draw(safe_text.filter(lambda x: len(x) > 0)),
-        api_id=draw(safe_text),
-        mode=draw(st.sampled_from(["batch", "replay"])),
-        config=draw(crawl_config_strategy()),
-        status=draw(st.sampled_from(["running", "paused", "completed", "failed"])),
-        stats=draw(crawl_stats_strategy()),
+def analysis_report_strategy(draw):
+    results = draw(st.lists(api_analysis_result_strategy(), min_size=0, max_size=3))
+    total_analyzed = len(results)
+    target_matched = sum(1 for r in results if r.matches_target)
+    total_captured = draw(st.integers(min_value=total_analyzed, max_value=total_analyzed + 100))
+    return AnalysisReport(
+        target=CaptureTarget(
+            app_name=draw(safe_text),
+            target_data=draw(safe_text),
+            operation_pages=draw(safe_text),
+            filter_domains=draw(st.none() | st.lists(safe_text, max_size=3)),
+        ),
+        results=results,
+        data_links=draw(st.lists(data_link_strategy(), min_size=0, max_size=3)),
+        total_captured=total_captured,
+        total_analyzed=total_analyzed,
+        target_matched=target_matched,
+        generated_at=draw(safe_datetimes),
     )
 
 
 # ============================================================
 # Property 1: CapturedRequest Round-Trip
-# **Validates: Requirements 1.4**
+# **Validates: Requirements 3.6**
 # ============================================================
 
 
@@ -232,66 +192,6 @@ class TestCapturedRequestRoundTrip:
 
 
 # ============================================================
-# OperationStep Round-Trip
-# ============================================================
-
-
-class TestOperationStepRoundTrip:
-    """OperationStep 序列化 round-trip 属性测试"""
-
-    @given(step=operation_step_strategy())
-    @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, step: OperationStep):
-        """model → to_json() → from_json() → should equal original"""
-        serialized = step.to_json()
-        deserialized = OperationStep.from_json(serialized)
-        assert deserialized == step
-
-    @given(step=operation_step_strategy())
-    @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, step: OperationStep):
-        """model → to_dict() → from_dict() → should equal original"""
-        d = step.to_dict()
-        restored = OperationStep.from_dict(d)
-        assert restored == step
-
-
-# ============================================================
-# OperationSequence Round-Trip (nested model)
-# ============================================================
-
-
-class TestOperationSequenceRoundTrip:
-    """OperationSequence 序列化 round-trip 属性测试（嵌套 OperationStep 列表）"""
-
-    @given(seq=operation_sequence_strategy())
-    @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, seq: OperationSequence):
-        """model → to_json() → from_json() → should equal original"""
-        serialized = seq.to_json()
-        deserialized = OperationSequence.from_json(serialized)
-        assert deserialized == seq
-
-    @given(seq=operation_sequence_strategy())
-    @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, seq: OperationSequence):
-        """model → to_dict() → from_dict() → should equal original"""
-        d = seq.to_dict()
-        restored = OperationSequence.from_dict(d)
-        assert restored == seq
-
-    @given(seq=operation_sequence_strategy())
-    @settings(max_examples=50)
-    def test_nested_steps_preserved(self, seq: OperationSequence):
-        """嵌套的 steps 列表在 round-trip 后保持一致"""
-        d = seq.to_dict()
-        restored = OperationSequence.from_dict(d)
-        assert len(restored.steps) == len(seq.steps)
-        for original_step, restored_step in zip(seq.steps, restored.steps):
-            assert original_step == restored_step
-
-
-# ============================================================
 # ParameterInfo Round-Trip
 # ============================================================
 
@@ -317,7 +217,7 @@ class TestParameterInfoRoundTrip:
 
 
 # ============================================================
-# APIAnalysisResult Round-Trip (nested model)
+# APIAnalysisResult Round-Trip
 # ============================================================
 
 
@@ -352,113 +252,84 @@ class TestAPIAnalysisResultRoundTrip:
 
 
 # ============================================================
-# GeneratedCode Round-Trip
+# DataLink Round-Trip
 # ============================================================
 
 
-class TestGeneratedCodeRoundTrip:
-    """GeneratedCode 序列化 round-trip 属性测试"""
+class TestDataLinkRoundTrip:
+    """DataLink 序列化 round-trip 属性测试"""
 
-    @given(code=generated_code_strategy())
+    @given(link=data_link_strategy())
     @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, code: GeneratedCode):
+    def test_to_json_from_json_roundtrip(self, link: DataLink):
         """model → to_json() → from_json() → should equal original"""
-        serialized = code.to_json()
-        deserialized = GeneratedCode.from_json(serialized)
-        assert deserialized == code
+        serialized = link.to_json()
+        deserialized = DataLink.from_json(serialized)
+        assert deserialized == link
 
-    @given(code=generated_code_strategy())
+    @given(link=data_link_strategy())
     @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, code: GeneratedCode):
+    def test_to_dict_from_dict_roundtrip(self, link: DataLink):
         """model → to_dict() → from_dict() → should equal original"""
-        d = code.to_dict()
-        restored = GeneratedCode.from_dict(d)
-        assert restored == code
+        d = link.to_dict()
+        restored = DataLink.from_dict(d)
+        assert restored == link
 
 
 # ============================================================
-# Property 7: CrawlData Round-Trip (CrawlConfig, CrawlStats, CrawlTask)
-# **Validates: Requirements 1.4**
+# AnalysisReport Round-Trip
 # ============================================================
 
 
-class TestCrawlConfigRoundTrip:
-    """CrawlConfig 序列化 round-trip 属性测试"""
+class TestAnalysisReportRoundTrip:
+    """AnalysisReport 序列化 round-trip 属性测试"""
 
-    @given(config=crawl_config_strategy())
-    @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, config: CrawlConfig):
-        """model → to_json() → from_json() → should equal original"""
-        serialized = config.to_json()
-        deserialized = CrawlConfig.from_json(serialized)
-        assert deserialized == config
-
-    @given(config=crawl_config_strategy())
-    @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, config: CrawlConfig):
-        """model → to_dict() → from_dict() → should equal original"""
-        d = config.to_dict()
-        restored = CrawlConfig.from_dict(d)
-        assert restored == config
-
-
-class TestCrawlStatsRoundTrip:
-    """CrawlStats 序列化 round-trip 属性测试"""
-
-    @given(stats=crawl_stats_strategy())
-    @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, stats: CrawlStats):
-        """model → to_json() → from_json() → should equal original"""
-        serialized = stats.to_json()
-        deserialized = CrawlStats.from_json(serialized)
-        assert deserialized == stats
-
-    @given(stats=crawl_stats_strategy())
-    @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, stats: CrawlStats):
-        """model → to_dict() → from_dict() → should equal original"""
-        d = stats.to_dict()
-        restored = CrawlStats.from_dict(d)
-        assert restored == stats
-
-
-class TestCrawlTaskRoundTrip:
-    """CrawlTask 序列化 round-trip 属性测试（嵌套 CrawlConfig 和 CrawlStats）"""
-
-    @given(task=crawl_task_strategy())
-    @settings(max_examples=100)
-    def test_to_json_from_json_roundtrip(self, task: CrawlTask):
-        """model → to_json() → from_json() → should equal original"""
-        serialized = task.to_json()
-        deserialized = CrawlTask.from_json(serialized)
-        assert deserialized == task
-
-    @given(task=crawl_task_strategy())
-    @settings(max_examples=100)
-    def test_to_dict_from_dict_roundtrip(self, task: CrawlTask):
-        """model → to_dict() → from_dict() → should equal original"""
-        d = task.to_dict()
-        restored = CrawlTask.from_dict(d)
-        assert restored == task
-
-    @given(task=crawl_task_strategy())
+    @given(report=analysis_report_strategy())
     @settings(max_examples=50)
-    def test_nested_config_and_stats_preserved(self, task: CrawlTask):
-        """嵌套的 config 和 stats 在 round-trip 后保持一致"""
-        d = task.to_dict()
-        restored = CrawlTask.from_dict(d)
-        assert restored.config == task.config
-        assert restored.stats == task.stats
+    def test_to_json_from_json_roundtrip(self, report: AnalysisReport):
+        """model → to_json() → from_json() → should equal original"""
+        serialized = report.to_json()
+        deserialized = AnalysisReport.from_json(serialized)
+        assert deserialized == report
 
-    @given(task=crawl_task_strategy())
+    @given(report=analysis_report_strategy())
     @settings(max_examples=50)
-    def test_json_dumps_loads_roundtrip(self, task: CrawlTask):
-        """model → to_dict() → json.dumps → json.loads → from_dict() → should equal original"""
-        d = task.to_dict()
-        json_str = json.dumps(d, ensure_ascii=False)
-        restored_dict = json.loads(json_str)
-        restored = CrawlTask.from_dict(restored_dict)
-        assert restored == task
+    def test_to_dict_from_dict_roundtrip(self, report: AnalysisReport):
+        """model → to_dict() → from_dict() → should equal original"""
+        d = report.to_dict()
+        restored = AnalysisReport.from_dict(d)
+        assert restored == report
+
+
+# ============================================================
+# APIType Enum Tests
+# ============================================================
+
+
+class TestAPITypeEnum:
+    """APIType 枚举测试"""
+
+    def test_all_values_exist(self):
+        """所有枚举值应存在"""
+        assert APIType.LIST.value == "list"
+        assert APIType.PAGINATION.value == "pagination"
+        assert APIType.DETAIL.value == "detail"
+        assert APIType.MEDIA.value == "media"
+        assert APIType.CONFIG.value == "config"
+        assert APIType.AUX.value == "aux"
+
+    def test_enum_count(self):
+        """应有 6 种接口类型"""
+        assert len(APIType) == 6
+
+    def test_enum_from_value(self):
+        """应能从字符串值创建枚举"""
+        assert APIType("list") == APIType.LIST
+        assert APIType("pagination") == APIType.PAGINATION
+        assert APIType("detail") == APIType.DETAIL
+        assert APIType("media") == APIType.MEDIA
+        assert APIType("config") == APIType.CONFIG
+        assert APIType("aux") == APIType.AUX
 
 
 # ============================================================
@@ -467,14 +338,13 @@ class TestCrawlTaskRoundTrip:
 
 
 class TestEdgeCases:
-    """边界情况测试：空字符串、None 值、空列表、大字节数组、Unicode 字符"""
+    """边界情况测试"""
 
-    def test_captured_request_empty_body(self):
+    def test_captured_request_none_body(self):
         """CapturedRequest with None body round-trips correctly"""
         req = CapturedRequest(
             id="test-1",
             timestamp=datetime(2024, 1, 1, 12, 0, 0),
-            operation_step_id="step-1",
             method="GET",
             url="https://example.com",
             headers={},
@@ -489,202 +359,130 @@ class TestEdgeCases:
         assert restored.body is None
         assert restored.response_body is None
 
-    def test_captured_request_empty_bytes_body(self):
-        """CapturedRequest with empty bytes body round-trips correctly"""
+    def test_captured_request_empty_string_body(self):
+        """CapturedRequest with empty string body round-trips correctly"""
         req = CapturedRequest(
             id="test-2",
             timestamp=datetime(2024, 1, 1, 12, 0, 0),
-            operation_step_id="step-1",
             method="POST",
             url="https://example.com/api",
             headers={"Content-Type": "application/json"},
-            body=b"",
+            body="",
             response_status=200,
             response_headers={},
-            response_body=b"",
+            response_body="",
             is_decrypted=True,
         )
         restored = CapturedRequest.from_json(req.to_json())
         assert restored == req
-        assert restored.body == b""
-        assert restored.response_body == b""
+        assert restored.body == ""
+        assert restored.response_body == ""
 
-    def test_captured_request_large_binary_body(self):
-        """CapturedRequest with large binary body round-trips correctly"""
-        large_body = bytes(range(256)) * 100  # 25600 bytes
-        req = CapturedRequest(
-            id="test-3",
-            timestamp=datetime(2024, 6, 15, 8, 30, 0),
-            operation_step_id="step-large",
-            method="POST",
-            url="https://example.com/upload",
-            headers={},
-            body=large_body,
-            response_status=201,
-            response_headers={},
-            response_body=large_body,
-            is_decrypted=True,
-        )
-        restored = CapturedRequest.from_json(req.to_json())
-        assert restored == req
-        assert restored.body == large_body
-
-    def test_captured_request_unicode_headers(self):
-        """CapturedRequest with unicode characters in headers round-trips correctly"""
+    def test_captured_request_unicode(self):
+        """CapturedRequest with unicode characters round-trips correctly"""
         req = CapturedRequest(
             id="test-unicode",
             timestamp=datetime(2024, 1, 1, 0, 0, 0),
-            operation_step_id="步骤-1",
             method="GET",
             url="https://例え.jp/パス",
             headers={"X-Custom": "中文值", "Accept": "テスト"},
             body=None,
             response_status=200,
             response_headers={"X-Response": "日本語"},
-            response_body=None,
+            response_body='{"message": "你好世界"}',
             is_decrypted=True,
         )
         restored = CapturedRequest.from_json(req.to_json())
         assert restored == req
 
-    def test_captured_request_empty_strings(self):
-        """CapturedRequest with empty strings round-trips correctly"""
+    def test_captured_request_large_response_body(self):
+        """CapturedRequest with large response body round-trips correctly"""
+        large_body = json.dumps({"items": [{"id": i, "name": f"item-{i}"} for i in range(1000)]})
         req = CapturedRequest(
-            id="",
-            timestamp=datetime(2024, 1, 1, 0, 0, 0),
-            operation_step_id="",
-            method="",
-            url="",
-            headers={"": ""},
+            id="test-large",
+            timestamp=datetime(2024, 6, 15, 8, 30, 0),
+            method="GET",
+            url="https://example.com/api/list",
+            headers={},
             body=None,
-            response_status=0,
-            response_headers={},
-            response_body=None,
-            is_decrypted=False,
+            response_status=200,
+            response_headers={"Content-Type": "application/json"},
+            response_body=large_body,
+            is_decrypted=True,
         )
         restored = CapturedRequest.from_json(req.to_json())
         assert restored == req
-
-    def test_operation_sequence_empty_steps(self):
-        """OperationSequence with empty steps list round-trips correctly"""
-        seq = OperationSequence(
-            id="seq-empty",
-            app_package="com.example.app",
-            intent_description="空操作序列",
-            steps=[],
-            created_at=datetime(2024, 1, 1, 0, 0, 0),
-        )
-        restored = OperationSequence.from_json(seq.to_json())
-        assert restored == seq
-        assert restored.steps == []
-
-    def test_operation_step_none_target_and_error(self):
-        """OperationStep with None target and error_message round-trips correctly"""
-        step = OperationStep(
-            id="step-none",
-            sequence_id="seq-1",
-            action_type="wait",
-            target=None,
-            parameters={},
-            status="pending",
-            error_message=None,
-        )
-        restored = OperationStep.from_json(step.to_json())
-        assert restored == step
-        assert restored.target is None
-        assert restored.error_message is None
+        assert restored.response_body == large_body
 
     def test_api_analysis_result_empty_parameters(self):
         """APIAnalysisResult with empty parameters list round-trips correctly"""
         result = APIAnalysisResult(
             request_id="req-1",
             endpoint="/api/v1/empty",
-            purpose="测试空参数",
+            api_type=APIType.AUX,
             parameters=[],
-            reproducibility="reproducible",
-            reproducibility_reason="无参数",
-            confidence=1.0,
+            has_signature=False,
+            signature_fields=[],
+            matches_target=False,
+            call_count=1,
         )
         restored = APIAnalysisResult.from_json(result.to_json())
         assert restored == result
         assert restored.parameters == []
 
-    def test_api_analysis_result_confidence_boundaries(self):
-        """APIAnalysisResult with confidence at boundaries (0.0 and 1.0)"""
-        for conf in [0.0, 1.0, 0.5]:
-            result = APIAnalysisResult(
-                request_id="req-conf",
-                endpoint="/api/test",
-                purpose="confidence test",
-                parameters=[],
-                reproducibility="unknown",
-                reproducibility_reason="test",
-                confidence=conf,
-            )
-            restored = APIAnalysisResult.from_json(result.to_json())
-            assert restored.confidence == conf
-
-    def test_generated_code_none_failure_reason(self):
-        """GeneratedCode with None failure_reason round-trips correctly"""
-        code = GeneratedCode(
-            api_id="api-1",
-            code="import requests\n\ndef fetch():\n    pass\n",
-            session_params=["TOKEN", "SESSION_ID"],
-            verification_status="passed",
-            failure_reason=None,
-        )
-        restored = GeneratedCode.from_json(code.to_json())
-        assert restored == code
-        assert restored.failure_reason is None
-
-    def test_generated_code_empty_session_params(self):
-        """GeneratedCode with empty session_params list round-trips correctly"""
-        code = GeneratedCode(
-            api_id="api-2",
-            code="print('hello')",
-            session_params=[],
-            verification_status="pending",
-            failure_reason=None,
-        )
-        restored = GeneratedCode.from_json(code.to_json())
-        assert restored == code
-        assert restored.session_params == []
-
-    def test_crawl_task_nested_roundtrip(self):
-        """CrawlTask with nested CrawlConfig and CrawlStats round-trips correctly"""
-        task = CrawlTask(
-            id="task-1",
-            api_id="api-1",
-            mode="batch",
-            config=CrawlConfig(
-                concurrency=5,
-                interval_ms=1000,
-                max_rounds=10,
-                failure_threshold=3,
-                round_interval_ms=5000,
+    def test_analysis_report_empty_results(self):
+        """AnalysisReport with empty results round-trips correctly"""
+        report = AnalysisReport(
+            target=CaptureTarget(
+                app_name="TestApp",
+                target_data="列表数据",
+                operation_pages="首页",
             ),
-            status="running",
-            stats=CrawlStats(
-                total_requests=100,
-                success_count=95,
-                failure_count=5,
-                consecutive_failures=0,
-                data_collected=95,
-            ),
+            results=[],
+            data_links=[],
+            total_captured=0,
+            total_analyzed=0,
+            target_matched=0,
+            generated_at=datetime(2024, 1, 1, 0, 0, 0),
         )
-        restored = CrawlTask.from_json(task.to_json())
-        assert restored == task
-        assert restored.config == task.config
-        assert restored.stats == task.stats
+        restored = AnalysisReport.from_json(report.to_json())
+        assert restored == report
 
-    def test_crawl_stats_zero_values(self):
-        """CrawlStats with all zero values round-trips correctly"""
-        stats = CrawlStats(
-            total_requests=0,
-            success_count=0,
-            failure_count=0,
-            consecutive_failures=0,
-            data_collected=0,
-        )
-        restored = CrawlStats.from_json(stats.to_json())
-        assert restored == stats
+    def test_capture_target_defaults(self):
+        """CaptureTarget with default values"""
+        target = CaptureTarget()
+        assert target.app_name == ""
+        assert target.target_data == ""
+        assert target.operation_pages == ""
+        assert target.filter_domains is None
+
+    def test_filter_rules_defaults(self):
+        """FilterRules with default values"""
+        rules = FilterRules()
+        assert "image/" in rules.content_type_blacklist
+        assert "json" in rules.content_type_whitelist
+        assert "/api/" in rules.api_path_patterns
+        assert rules.user_domain_whitelist is None
+        assert rules.user_domain_blacklist is None
+
+    def test_result_types_creation(self):
+        """Result types can be created with default values"""
+        req_status = RequirementStatus(is_complete=False, missing_fields=["app_name"])
+        assert not req_status.is_complete
+        assert "app_name" in req_status.missing_fields
+
+        conn = ConnectionResult(success=True, device_id="emulator-5554")
+        assert conn.success
+        assert conn.device_id == "emulator-5554"
+
+        cert = CertResult(success=False, error="Permission denied")
+        assert not cert.success
+        assert cert.error == "Permission denied"
+
+        proxy = ProxyResult(success=True, host="127.0.0.1", port=8080)
+        assert proxy.success
+        assert proxy.port == 8080
+
+        proc = ProcessResult(success=True, pid=12345)
+        assert proc.success
+        assert proc.pid == 12345

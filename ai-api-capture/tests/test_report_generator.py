@@ -1,402 +1,484 @@
 """报告生成模块测试
 
 包含：
-- 单元测试：验证报告生成、Markdown 渲染、文件保存、接口详情查询
-- 属性测试：验证报告数据一致性（总数 = 各分类之和）
+- 单元测试：验证报告生成、Markdown 渲染、cURL 命令生成、样本保存
 """
 
+import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
-from src.models import APIAnalysisResult, GeneratedCode, ParameterInfo
-from src.report_generator import APISummary, ReportGenerator, SummaryReport
+from src.models import (
+    AnalysisReport,
+    APIAnalysisResult,
+    APIType,
+    CapturedRequest,
+    CaptureTarget,
+    DataLink,
+    ParameterInfo,
+)
+from src.report_generator import ReportGenerator
 
 
 # ============================================================
-# Hypothesis 策略
+# 测试辅助
 # ============================================================
 
 
-def parameter_info_strategy():
-    """生成 ParameterInfo 的策略"""
-    return st.builds(
-        ParameterInfo,
-        name=st.text(min_size=1, max_size=20, alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="_-")),
-        value_sample=st.text(min_size=0, max_size=50),
-        category=st.sampled_from(["static", "session", "dynamic", "unknown"]),
-        source=st.sampled_from(["query", "header", "body", "cookie"]),
-        reasoning=st.text(min_size=1, max_size=100),
+def _make_target() -> CaptureTarget:
+    """创建测试用 CaptureTarget"""
+    return CaptureTarget(
+        app_name="TestApp",
+        target_data="小说章节列表和内容",
+        operation_pages="首页、书架、阅读页",
     )
 
 
-def api_analysis_result_strategy():
-    """生成 APIAnalysisResult 的策略"""
-    return st.builds(
-        APIAnalysisResult,
-        request_id=st.text(min_size=1, max_size=30, alphabet=st.characters(whitelist_categories=("L", "N"), whitelist_characters="_-")),
-        endpoint=st.from_regex(r"/[a-z]{1,10}(/[a-z]{1,10}){0,3}", fullmatch=True),
-        purpose=st.sampled_from(["feed", "user", "comment", "search", "auth", "unknown"]),
-        parameters=st.lists(parameter_info_strategy(), min_size=0, max_size=5),
-        reproducibility=st.sampled_from(["reproducible", "complex", "unknown"]),
-        reproducibility_reason=st.text(min_size=1, max_size=100),
-        confidence=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
+def _make_request(
+    request_id: str = "req-001",
+    method: str = "GET",
+    url: str = "https://api.example.com/v1/books?page=1",
+    headers: dict = None,
+    body: str = None,
+    response_status: int = 200,
+    response_body: str = None,
+) -> CapturedRequest:
+    """创建测试用 CapturedRequest"""
+    if headers is None:
+        headers = {
+            "User-Agent": "TestApp/1.0",
+            "Authorization": "Bearer token123",
+            "Content-Type": "application/json",
+            "Host": "api.example.com",
+        }
+    if response_body is None:
+        response_body = json.dumps({"code": 0, "data": [{"id": 1, "title": "Book 1"}]})
+    return CapturedRequest(
+        id=request_id,
+        timestamp=datetime(2024, 1, 15, 10, 30, 0),
+        method=method,
+        url=url,
+        headers=headers,
+        body=body,
+        response_status=response_status,
+        response_headers={"Content-Type": "application/json"},
+        response_body=response_body,
+        is_decrypted=True,
+    )
+
+
+def _make_result(
+    request_id: str = "req-001",
+    endpoint: str = "/v1/books",
+    api_type: APIType = APIType.LIST,
+    matches_target: bool = True,
+    has_signature: bool = False,
+    signature_fields: list = None,
+    call_count: int = 1,
+) -> APIAnalysisResult:
+    """创建测试用 APIAnalysisResult"""
+    return APIAnalysisResult(
+        request_id=request_id,
+        endpoint=endpoint,
+        api_type=api_type,
+        parameters=[
+            ParameterInfo(
+                name="page",
+                value_sample="1",
+                category="dynamic",
+                source="query",
+            ),
+            ParameterInfo(
+                name="token",
+                value_sample="Bearer token123",
+                category="session",
+                source="header",
+            ),
+        ],
+        has_signature=has_signature,
+        signature_fields=signature_fields or [],
+        matches_target=matches_target,
+        call_count=call_count,
+    )
+
+
+def _make_report(
+    results: list = None,
+    data_links: list = None,
+) -> AnalysisReport:
+    """创建测试用 AnalysisReport"""
+    if results is None:
+        results = [_make_result()]
+    if data_links is None:
+        data_links = []
+    return AnalysisReport(
+        target=_make_target(),
+        results=results,
+        data_links=data_links,
+        total_captured=50,
+        total_analyzed=len(results),
+        target_matched=sum(1 for r in results if r.matches_target),
+        generated_at=datetime(2024, 1, 15, 12, 0, 0),
     )
 
 
 # ============================================================
-# 属性测试
+# 单元测试：generate_curl
 # ============================================================
 
 
-class TestReportCountsProperty:
-    """属性测试：报告数据一致性
+class TestGenerateCurl:
+    """测试 generate_curl 方法"""
 
-    **Validates: Requirements 7.1**
-    """
-
-    @given(analyses=st.lists(api_analysis_result_strategy(), min_size=1, max_size=50))
-    @settings(max_examples=200)
-    def test_report_counts_consistency(self, analyses):
-        """总数 = 可复现数 + 复杂数 + 未知数 = 分析结果列表长度
-
-        属性：汇总报告中的总接口数量等于可复现接口数量加复杂接口数量加未知接口数量，
-        且等于输入分析结果列表的长度。
-        """
+    def test_get_request(self):
+        """GET 请求不包含 -X 标志"""
         generator = ReportGenerator()
-        report = generator.generate_summary(analyses)
+        request = _make_request(method="GET")
+        curl = generator.generate_curl(request)
 
-        # 总数等于各分类之和
-        assert report.total_count == (
-            report.reproducible_count + report.complex_count + report.unknown_count
-        )
+        assert "curl" in curl
+        assert "-X GET" not in curl
+        assert request.url in curl
 
-        # 总数等于输入列表长度
-        assert report.total_count == len(analyses)
-
-    @given(analyses=st.lists(api_analysis_result_strategy(), min_size=1, max_size=50))
-    @settings(max_examples=200)
-    def test_api_summaries_count_matches_total(self, analyses):
-        """api_summaries 列表长度等于 total_count
-
-        属性：报告中的摘要列表长度应与总接口数一致。
-        """
+    def test_post_request(self):
+        """POST 请求包含 -X POST"""
         generator = ReportGenerator()
-        report = generator.generate_summary(analyses)
+        request = _make_request(method="POST", body='{"key": "value"}')
+        curl = generator.generate_curl(request)
 
-        assert len(report.api_summaries) == report.total_count
+        assert "-X POST" in curl
+        assert "-d " in curl
 
-    @given(analyses=st.lists(api_analysis_result_strategy(), min_size=1, max_size=50))
-    @settings(max_examples=200)
-    def test_category_counts_match_input(self, analyses):
-        """各分类计数与输入数据中的实际分类一致
-
-        属性：报告中各分类的计数应与输入分析结果中对应分类的数量完全匹配。
-        """
+    def test_includes_non_trivial_headers(self):
+        """包含非平凡请求头"""
         generator = ReportGenerator()
-        report = generator.generate_summary(analyses)
+        request = _make_request()
+        curl = generator.generate_curl(request)
 
-        expected_reproducible = sum(
-            1 for a in analyses if a.reproducibility == "reproducible"
-        )
-        expected_complex = sum(
-            1 for a in analyses if a.reproducibility == "complex"
-        )
-        expected_unknown = sum(
-            1 for a in analyses if a.reproducibility == "unknown"
-        )
+        assert "User-Agent: TestApp/1.0" in curl
+        assert "Authorization: Bearer token123" in curl
+        assert "Content-Type: application/json" in curl
 
-        assert report.reproducible_count == expected_reproducible
-        assert report.complex_count == expected_complex
-        assert report.unknown_count == expected_unknown
+    def test_excludes_trivial_headers(self):
+        """排除平凡请求头（Host, Content-Length 等）"""
+        generator = ReportGenerator()
+        request = _make_request(
+            headers={
+                "Host": "api.example.com",
+                "Content-Length": "100",
+                "Connection": "keep-alive",
+                "Accept-Encoding": "gzip",
+                "X-Custom": "value",
+            }
+        )
+        curl = generator.generate_curl(request)
+
+        assert "Host:" not in curl
+        assert "Content-Length:" not in curl
+        assert "Connection:" not in curl
+        assert "Accept-Encoding:" not in curl
+        assert "X-Custom: value" in curl
+
+    def test_includes_complete_url(self):
+        """包含完整 URL（含查询参数）"""
+        generator = ReportGenerator()
+        url = "https://api.example.com/v1/books?page=1&size=20"
+        request = _make_request(url=url)
+        curl = generator.generate_curl(request)
+
+        assert url in curl
+
+    def test_put_method(self):
+        """PUT 方法"""
+        generator = ReportGenerator()
+        request = _make_request(method="PUT", body='{"title": "new"}')
+        curl = generator.generate_curl(request)
+
+        assert "-X PUT" in curl
+
+    def test_body_with_single_quotes(self):
+        """请求体中包含单引号时正确转义"""
+        generator = ReportGenerator()
+        request = _make_request(method="POST", body="{'key': 'value'}")
+        curl = generator.generate_curl(request)
+
+        # Should contain the body (escaped)
+        assert "-d " in curl
 
 
 # ============================================================
-# 单元测试
+# 单元测试：save_samples
 # ============================================================
 
 
-class TestGenerateSummary:
-    """测试 generate_summary 方法"""
+class TestSaveSamples:
+    """测试 save_samples 方法"""
 
-    def _make_analysis(
-        self, request_id: str, endpoint: str, reproducibility: str
-    ) -> APIAnalysisResult:
-        """辅助方法：创建分析结果"""
-        return APIAnalysisResult(
-            request_id=request_id,
-            endpoint=endpoint,
-            purpose="feed",
-            parameters=[],
-            reproducibility=reproducibility,
-            reproducibility_reason="test reason",
-            confidence=0.9,
-        )
-
-    def test_empty_list(self):
-        """空列表生成空报告"""
+    def test_saves_sample_files(self):
+        """保存样本文件到指定目录"""
         generator = ReportGenerator()
-        report = generator.generate_summary([])
+        requests = [_make_request()]
+        results = [_make_result()]
 
-        assert report.total_count == 0
-        assert report.reproducible_count == 0
-        assert report.complex_count == 0
-        assert report.unknown_count == 0
-        assert report.api_summaries == []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples_dir = os.path.join(tmpdir, "samples")
+            paths = generator.save_samples(requests, results, samples_dir)
 
-    def test_single_reproducible(self):
-        """单个可复现接口"""
+            assert len(paths) == 1
+            assert paths[0] == "samples/req-001.json"
+
+            # 验证文件存在
+            filepath = os.path.join(samples_dir, "req-001.json")
+            assert os.path.exists(filepath)
+
+            # 验证文件内容
+            content = json.loads(Path(filepath).read_text(encoding="utf-8"))
+            assert content["request"]["method"] == "GET"
+            assert content["request"]["url"] == "https://api.example.com/v1/books?page=1"
+            assert content["response"]["status"] == 200
+            assert content["analysis"]["endpoint"] == "/v1/books"
+            assert content["analysis"]["api_type"] == "list"
+
+    def test_creates_directory(self):
+        """自动创建 samples 目录"""
         generator = ReportGenerator()
-        analyses = [self._make_analysis("req-1", "/api/feed", "reproducible")]
-        report = generator.generate_summary(analyses)
+        requests = [_make_request()]
+        results = [_make_result()]
 
-        assert report.total_count == 1
-        assert report.reproducible_count == 1
-        assert report.complex_count == 0
-        assert report.unknown_count == 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples_dir = os.path.join(tmpdir, "nested", "samples")
+            paths = generator.save_samples(requests, results, samples_dir)
 
-    def test_mixed_types(self):
-        """混合类型接口"""
+            assert len(paths) == 1
+            assert os.path.exists(samples_dir)
+
+    def test_multiple_samples(self):
+        """保存多个样本文件"""
         generator = ReportGenerator()
-        analyses = [
-            self._make_analysis("req-1", "/api/feed", "reproducible"),
-            self._make_analysis("req-2", "/api/user", "reproducible"),
-            self._make_analysis("req-3", "/api/sign", "complex"),
-            self._make_analysis("req-4", "/api/other", "unknown"),
+        requests = [
+            _make_request(request_id="req-001"),
+            _make_request(request_id="req-002", url="https://api.example.com/v1/detail?id=1"),
         ]
-        report = generator.generate_summary(analyses)
+        results = [
+            _make_result(request_id="req-001"),
+            _make_result(request_id="req-002", endpoint="/v1/detail", api_type=APIType.DETAIL),
+        ]
 
-        assert report.total_count == 4
-        assert report.reproducible_count == 2
-        assert report.complex_count == 1
-        assert report.unknown_count == 1
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples_dir = os.path.join(tmpdir, "samples")
+            paths = generator.save_samples(requests, results, samples_dir)
 
-    def test_api_summaries_content(self):
-        """验证摘要内容正确"""
+            assert len(paths) == 2
+            assert "samples/req-001.json" in paths
+            assert "samples/req-002.json" in paths
+
+    def test_missing_request_skipped(self):
+        """当 result 对应的 request 不存在时跳过"""
         generator = ReportGenerator()
-        analysis = APIAnalysisResult(
-            request_id="req-1",
-            endpoint="/api/feed",
-            purpose="feed",
-            parameters=[],
-            reproducibility="reproducible",
-            reproducibility_reason="all static",
-            confidence=0.95,
-        )
-        report = generator.generate_summary([analysis])
+        requests = [_make_request(request_id="req-001")]
+        results = [
+            _make_result(request_id="req-001"),
+            _make_result(request_id="req-999"),  # 不存在的 request
+        ]
 
-        assert len(report.api_summaries) == 1
-        summary = report.api_summaries[0]
-        assert summary.request_id == "req-1"
-        assert summary.endpoint == "/api/feed"
-        assert summary.purpose == "feed"
-        assert summary.reproducibility == "reproducible"
-        assert summary.confidence == 0.95
+        with tempfile.TemporaryDirectory() as tmpdir:
+            samples_dir = os.path.join(tmpdir, "samples")
+            paths = generator.save_samples(requests, results, samples_dir)
+
+            assert len(paths) == 1
+            assert paths[0] == "samples/req-001.json"
+
+
+# ============================================================
+# 单元测试：render_markdown
+# ============================================================
 
 
 class TestRenderMarkdown:
     """测试 render_markdown 方法"""
 
-    def test_renders_header(self):
-        """渲染包含标题"""
+    def test_contains_title(self):
+        """报告包含标题"""
         generator = ReportGenerator()
-        report = SummaryReport(
-            total_count=0,
-            reproducible_count=0,
-            complex_count=0,
-            unknown_count=0,
-            api_summaries=[],
-        )
+        report = _make_report()
         markdown = generator.render_markdown(report)
 
-        assert "# 接口抓取分析报告" in markdown
+        assert "# 接口分析报告" in markdown
 
-    def test_renders_statistics_table(self):
-        """渲染包含统计表格"""
+    def test_contains_target_summary(self):
+        """报告包含抓取目标摘要"""
         generator = ReportGenerator()
-        report = SummaryReport(
-            total_count=3,
-            reproducible_count=2,
-            complex_count=1,
-            unknown_count=0,
-            api_summaries=[],
-        )
+        report = _make_report()
         markdown = generator.render_markdown(report)
 
-        assert "| 总接口数 | 3 |" in markdown
-        assert "| 可复现接口 | 2 |" in markdown
-        assert "| 复杂接口 | 1 |" in markdown
-        assert "| 未知接口 | 0 |" in markdown
+        assert "## 抓取目标摘要" in markdown
+        assert "TestApp" in markdown
+        assert "小说章节列表和内容" in markdown
+        assert "首页、书架、阅读页" in markdown
 
-    def test_renders_api_list(self):
-        """渲染包含接口列表"""
+    def test_contains_statistics(self):
+        """报告包含统计数据"""
         generator = ReportGenerator()
-        report = SummaryReport(
-            total_count=1,
-            reproducible_count=1,
-            complex_count=0,
-            unknown_count=0,
-            api_summaries=[
-                APISummary(
-                    request_id="req-1",
-                    endpoint="/api/feed",
-                    purpose="feed",
-                    reproducibility="reproducible",
-                    confidence=0.9,
-                )
-            ],
-        )
+        report = _make_report()
         markdown = generator.render_markdown(report)
 
-        assert "/api/feed" in markdown
-        assert "feed" in markdown
-        assert "✅ 可复现" in markdown
+        assert "总捕获请求数: 50" in markdown
+        assert "分析接口数: 1" in markdown
+        assert "匹配目标接口数: 1" in markdown
 
-
-class TestSaveReport:
-    """测试 save_report 方法"""
-
-    def test_saves_to_file(self):
-        """报告保存到文件"""
+    def test_contains_data_links(self):
+        """报告包含数据链路图"""
         generator = ReportGenerator()
-        report = SummaryReport(
-            total_count=1,
-            reproducible_count=1,
-            complex_count=0,
-            unknown_count=0,
-            api_summaries=[
-                APISummary(
-                    request_id="req-1",
-                    endpoint="/api/feed",
-                    purpose="feed",
-                    reproducibility="reproducible",
-                    confidence=0.9,
-                )
-            ],
-        )
+        data_links = [
+            DataLink(
+                source_endpoint="/v1/books",
+                target_endpoint="/v1/book/detail",
+                link_field="book_id",
+                link_type="list_to_detail",
+            )
+        ]
+        report = _make_report(data_links=data_links)
+        markdown = generator.render_markdown(report)
+
+        assert "## 数据链路图" in markdown
+        assert "/v1/books" in markdown
+        assert "/v1/book/detail" in markdown
+        assert "book_id" in markdown
+        assert "list_to_detail" in markdown
+
+    def test_no_data_links(self):
+        """无数据链路时显示提示"""
+        generator = ReportGenerator()
+        report = _make_report(data_links=[])
+        markdown = generator.render_markdown(report)
+
+        assert "未检测到接口间数据链路关系" in markdown
+
+    def test_contains_overview_table(self):
+        """报告包含接口概览表"""
+        generator = ReportGenerator()
+        report = _make_report()
+        markdown = generator.render_markdown(report)
+
+        assert "## 接口概览表" in markdown
+        assert "| 接口路径 | 类型 | 调用次数 | 匹配目标 |" in markdown
+        assert "/v1/books" in markdown
+        assert "list" in markdown
+
+    def test_contains_api_details(self):
+        """报告包含接口详情"""
+        generator = ReportGenerator()
+        report = _make_report()
+        markdown = generator.render_markdown(report)
+
+        assert "## 接口详情" in markdown
+        assert "### /v1/books" in markdown
+        assert "#### 请求参数" in markdown
+        assert "| page | dynamic | query |" in markdown
+
+    def test_contains_signature_section(self):
+        """报告包含签名机制说明"""
+        generator = ReportGenerator()
+        results = [
+            _make_result(has_signature=True, signature_fields=["sign", "nonce", "timestamp"])
+        ]
+        report = _make_report(results=results)
+        markdown = generator.render_markdown(report)
+
+        assert "## 签名机制说明" in markdown
+        assert "sign" in markdown
+        assert "nonce" in markdown
+        assert "timestamp" in markdown
+
+    def test_no_signature(self):
+        """无签名接口时显示提示"""
+        generator = ReportGenerator()
+        results = [_make_result(has_signature=False)]
+        report = _make_report(results=results)
+        markdown = generator.render_markdown(report)
+
+        assert "未检测到包含动态签名的接口" in markdown
+
+    def test_contains_strategy_suggestions(self):
+        """报告包含采集策略建议"""
+        generator = ReportGenerator()
+        report = _make_report()
+        markdown = generator.render_markdown(report)
+
+        assert "## 采集策略建议" in markdown
+
+    def test_contains_sample_file_reference(self):
+        """报告包含样本文件引用"""
+        generator = ReportGenerator()
+        report = _make_report()
+        markdown = generator.render_markdown(report)
+
+        assert "samples/req-001.json" in markdown
+
+    def test_empty_results(self):
+        """无接口结果时显示提示"""
+        generator = ReportGenerator()
+        report = _make_report(results=[])
+        markdown = generator.render_markdown(report)
+
+        assert "未发现业务接口" in markdown
+
+    def test_generated_at_timestamp(self):
+        """报告包含生成时间"""
+        generator = ReportGenerator()
+        report = _make_report()
+        markdown = generator.render_markdown(report)
+
+        assert "2024-01-15 12:00:00" in markdown
+
+
+# ============================================================
+# 单元测试：generate
+# ============================================================
+
+
+class TestGenerate:
+    """测试 generate 方法"""
+
+    def test_generates_report_file(self):
+        """生成报告文件"""
+        generator = ReportGenerator()
+        report = _make_report()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "report.md")
-            generator.save_report(report, output_path)
+            output_dir = os.path.join(tmpdir, "analysis")
+            report_path = generator.generate(report, output_dir)
 
-            assert os.path.exists(output_path)
-            content = Path(output_path).read_text(encoding="utf-8")
-            assert "# 接口抓取分析报告" in content
-            assert "/api/feed" in content
+            assert os.path.exists(report_path)
+            assert report_path.endswith("report.md")
 
-    def test_creates_directories(self):
-        """自动创建目录"""
+            content = Path(report_path).read_text(encoding="utf-8")
+            assert "# 接口分析报告" in content
+
+    def test_creates_output_directory(self):
+        """自动创建输出目录"""
         generator = ReportGenerator()
-        report = SummaryReport(
-            total_count=0,
-            reproducible_count=0,
-            complex_count=0,
-            unknown_count=0,
-            api_summaries=[],
-        )
+        report = _make_report()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = os.path.join(tmpdir, "nested", "dir", "report.md")
-            generator.save_report(report, output_path)
+            output_dir = os.path.join(tmpdir, "nested", "analysis")
+            report_path = generator.generate(report, output_dir)
 
-            assert os.path.exists(output_path)
+            assert os.path.exists(output_dir)
+            assert os.path.exists(report_path)
 
-
-class TestGetApiDetail:
-    """测试 get_api_detail 方法"""
-
-    def test_basic_detail(self):
-        """基本详情输出"""
+    def test_returns_report_path(self):
+        """返回报告文件路径"""
         generator = ReportGenerator()
-        analysis = APIAnalysisResult(
-            request_id="req-1",
-            endpoint="/api/feed",
-            purpose="feed",
-            parameters=[
-                ParameterInfo(
-                    name="token",
-                    value_sample="abc123",
-                    category="session",
-                    source="header",
-                    reasoning="匹配会话参数模式",
-                )
-            ],
-            reproducibility="reproducible",
-            reproducibility_reason="所有参数均为静态或会话类型",
-            confidence=0.95,
-        )
+        report = _make_report()
 
-        detail = generator.get_api_detail(
-            request_id="req-1",
-            analysis=analysis,
-            generated_code=None,
-            crawl_status=None,
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = os.path.join(tmpdir, "analysis")
+            report_path = generator.generate(report, output_dir)
 
-        assert "# 接口详情: /api/feed" in detail
-        assert "req-1" in detail
-        assert "feed" in detail
-        assert "✅ 可复现" in detail
-        assert "token" in detail
-        assert "未生成代码" in detail
-        assert "未启动采集" in detail
-
-    def test_detail_with_generated_code(self):
-        """包含生成代码的详情"""
-        generator = ReportGenerator()
-        analysis = APIAnalysisResult(
-            request_id="req-1",
-            endpoint="/api/feed",
-            purpose="feed",
-            parameters=[],
-            reproducibility="reproducible",
-            reproducibility_reason="all static",
-            confidence=0.9,
-        )
-        generated = GeneratedCode(
-            api_id="req-1",
-            code="import requests\n\ndef fetch_feed():\n    pass",
-            session_params=["token"],
-            verification_status="passed",
-            failure_reason=None,
-        )
-
-        detail = generator.get_api_detail(
-            request_id="req-1",
-            analysis=analysis,
-            generated_code=generated,
-            crawl_status="running",
-        )
-
-        assert "```python" in detail
-        assert "import requests" in detail
-        assert "passed" in detail
-        assert "token" in detail
-        assert "running" in detail
-
-    def test_detail_with_crawl_status(self):
-        """包含采集状态的详情"""
-        generator = ReportGenerator()
-        analysis = APIAnalysisResult(
-            request_id="req-1",
-            endpoint="/api/data",
-            purpose="unknown",
-            parameters=[],
-            reproducibility="complex",
-            reproducibility_reason="包含动态参数",
-            confidence=0.7,
-        )
-
-        detail = generator.get_api_detail(
-            request_id="req-1",
-            analysis=analysis,
-            generated_code=None,
-            crawl_status="paused",
-        )
-
-        assert "⚠️ 复杂接口" in detail
-        assert "paused" in detail
+            expected_path = os.path.join(output_dir, "report.md")
+            assert report_path == expected_path

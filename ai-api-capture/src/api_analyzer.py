@@ -1,305 +1,623 @@
-"""接口分析模块 - 分析接口特征并判定可复现性
+"""接口分析模块 - 基于通用响应结构模式识别接口类型
 
 实现功能：
-- 参数提取：从 URL query、headers、body、cookies 中提取参数
-- 参数分类：基于规则和模式匹配将参数分为 static/session/dynamic/unknown
-- 可复现性判定：根据参数分类结果判定接口类型
-- 接口用途语义分析：基于 URL 模式和启发式规则分析接口用途
+- classify_api_type: 基于响应结构模式识别接口类型 (LIST/PAGINATION/DETAIL/MEDIA/CONFIG/AUX)
+- classify_parameters: 将请求参数分为 static/session/dynamic 三类
+- detect_data_links: 自动识别接口间的数据链路关系
+- analyze_all: 结合用户目标数据描述进行综合分析
 """
 
 import json
 import re
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 
-from src.models import APIAnalysisResult, CapturedRequest, ParameterInfo
+from src.models import (
+    AnalysisReport,
+    APIAnalysisResult,
+    APIType,
+    CapturedRequest,
+    CaptureTarget,
+    DataLink,
+    ParameterInfo,
+)
 
 
-@dataclass
-class RequestContext:
-    """请求上下文，用于辅助参数分类"""
+# ============================================================
+# 参数分类规则
+# ============================================================
 
-    url: str
-    method: str
-    content_type: Optional[str] = None
+# 静态参数名称（固定值，不随请求变化）
+STATIC_PARAM_NAMES: Set[str] = {
+    "version", "platform", "os", "brand", "model", "channel",
+    "appversion", "app_version", "pname", "channelcode", "channel_code",
+    "app_ver", "os_version", "os_ver", "osversion", "device_model",
+    "device_type", "devicemodel", "language", "lang", "locale",
+    "ver", "build", "build_number", "sdk_version", "api_version",
+    "client_type", "device_id", "device_brand", "screen_width",
+    "screen_height", "resolution", "network_type", "carrier",
+}
 
-
-class LLMClient(ABC):
-    """LLM 客户端抽象接口"""
-
-    @abstractmethod
-    async def analyze(self, prompt: str) -> str:
-        """调用 LLM 分析并返回结果"""
-        ...
-
-
-class DefaultLLMClient(LLMClient):
-    """默认 LLM 客户端 - 基于启发式规则的分析（无实际 LLM 调用）"""
-
-    # URL 路径到用途的映射
-    PURPOSE_PATTERNS: dict = {
-        "feed": "feed",
-        "timeline": "feed",
-        "stream": "feed",
-        "user": "user",
-        "profile": "user",
-        "account": "user",
-        "comment": "comment",
-        "reply": "comment",
-        "search": "search",
-        "query": "search",
-        "login": "auth",
-        "auth": "auth",
-        "token": "auth",
-        "upload": "upload",
-        "media": "media",
-        "image": "media",
-        "video": "media",
-        "notification": "notification",
-        "message": "message",
-        "chat": "message",
-        "order": "order",
-        "payment": "payment",
-        "pay": "payment",
-        "config": "config",
-        "setting": "config",
-        "ad": "advertisement",
-        "recommend": "recommendation",
-    }
-
-    async def analyze(self, prompt: str) -> str:
-        """基于启发式规则返回分析结果"""
-        return "heuristic-based analysis"
-
-    def detect_purpose(self, url: str) -> str:
-        """从 URL 路径中检测接口用途"""
-        parsed = urlparse(url)
-        path_lower = parsed.path.lower()
-
-        for pattern, purpose in self.PURPOSE_PATTERNS.items():
-            if pattern in path_lower:
-                return purpose
-
-        return "unknown"
-
-
-# 标准 HTTP 头部列表（提取参数时过滤掉这些）
-STANDARD_HEADERS = frozenset([
-    "host",
-    "connection",
-    "content-length",
-    "content-type",
-    "accept",
-    "accept-encoding",
-    "accept-language",
-    "cache-control",
-    "pragma",
-    "upgrade-insecure-requests",
-    "user-agent",
-    "referer",
-    "origin",
-    "sec-fetch-dest",
-    "sec-fetch-mode",
-    "sec-fetch-site",
-    "sec-ch-ua",
-    "sec-ch-ua-mobile",
-    "sec-ch-ua-platform",
-    "if-none-match",
-    "if-modified-since",
-    "transfer-encoding",
-    "te",
-    "keep-alive",
-    "date",
-    "vary",
-])
-
-# 静态参数名称模式
-STATIC_PARAM_NAMES = frozenset([
-    "app_version",
-    "appversion",
-    "app_ver",
-    "platform",
-    "os_version",
-    "os_ver",
-    "osversion",
-    "device_model",
-    "device_type",
-    "devicemodel",
-    "channel",
-    "language",
-    "lang",
-    "locale",
-    "version",
-    "ver",
-    "build",
-    "build_number",
-    "sdk_version",
-    "api_version",
-    "client_type",
-    "device_id",
-    "device_brand",
-    "screen_width",
-    "screen_height",
-    "resolution",
-    "network_type",
-    "carrier",
-])
-
-# 会话参数名称模式（正则）
-SESSION_PARAM_PATTERNS = [
+# 会话参数名称模式（用户身份标识）
+SESSION_PARAM_PATTERNS: List[re.Pattern] = [
     re.compile(r".*token.*", re.IGNORECASE),
     re.compile(r".*auth.*", re.IGNORECASE),
     re.compile(r".*session.*", re.IGNORECASE),
     re.compile(r".*cookie.*", re.IGNORECASE),
-    re.compile(r"^authorization$", re.IGNORECASE),
-    re.compile(r"^x-access-token$", re.IGNORECASE),
-    re.compile(r"^x-auth-token$", re.IGNORECASE),
-    re.compile(r"^bearer$", re.IGNORECASE),
-    re.compile(r"^api[_-]?key$", re.IGNORECASE),
-    re.compile(r"^access[_-]?key$", re.IGNORECASE),
     re.compile(r"^uid$", re.IGNORECASE),
     re.compile(r"^user[_-]?id$", re.IGNORECASE),
+    re.compile(r"^authorization$", re.IGNORECASE),
 ]
 
-# 动态参数名称模式（正则）
-DYNAMIC_PARAM_PATTERNS = [
+# 动态参数名称模式（每次请求值不同）
+DYNAMIC_PARAM_PATTERNS: List[re.Pattern] = [
     re.compile(r".*sign.*", re.IGNORECASE),
     re.compile(r".*nonce.*", re.IGNORECASE),
     re.compile(r".*timestamp.*", re.IGNORECASE),
     re.compile(r"^ts$", re.IGNORECASE),
     re.compile(r"^t$", re.IGNORECASE),
-    re.compile(r".*encrypt.*", re.IGNORECASE),
-    re.compile(r".*hash.*", re.IGNORECASE),
-    re.compile(r".*checksum.*", re.IGNORECASE),
-    re.compile(r"^_t$", re.IGNORECASE),
-    re.compile(r"^_ts$", re.IGNORECASE),
-    re.compile(r"^salt$", re.IGNORECASE),
-    re.compile(r"^random$", re.IGNORECASE),
+    re.compile(r"^signature$", re.IGNORECASE),
+    re.compile(r"^boxid$", re.IGNORECASE),
+    re.compile(r"^box_id$", re.IGNORECASE),
 ]
 
-# 动态值模式（hex/base64 哈希值）
-DYNAMIC_VALUE_PATTERNS = [
-    re.compile(r"^[0-9a-fA-F]{32}$"),  # MD5
-    re.compile(r"^[0-9a-fA-F]{40}$"),  # SHA1
-    re.compile(r"^[0-9a-fA-F]{64}$"),  # SHA256
-    re.compile(r"^[A-Za-z0-9+/]{20,}={0,2}$"),  # Base64 (20+ chars)
+# 分页参数名称
+PAGINATION_PARAM_NAMES: Set[str] = {
+    "page", "pageno", "page_no", "pagenumber", "page_number",
+    "offset", "cursor", "pageflag", "page_flag",
+    "pageindex", "page_index", "start", "limit",
+    "pagesize", "page_size", "per_page", "perpage", "size",
+}
+
+# 分页响应标识字段
+PAGINATION_RESPONSE_FIELDS: Set[str] = {
+    "hasmore", "has_more", "hasnext", "has_next",
+    "total", "totalcount", "total_count", "totalpage", "total_page",
+    "totalpages", "total_pages", "nextpage", "next_page",
+    "nextcursor", "next_cursor", "pagecount", "page_count",
+}
+
+# 名称/标题类字段名
+NAME_TITLE_FIELDS: Set[str] = {
+    "name", "title", "label", "text", "desc", "description",
+    "nickname", "username", "displayname", "display_name",
+    "heading", "subject", "caption",
+}
+
+# 配置类字段名
+CONFIG_FIELDS: Set[str] = {
+    "config", "settings", "setting", "version", "configuration",
+    "preferences", "options", "feature_flags", "features",
+}
+
+# 媒体 URL 模式
+MEDIA_URL_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\.mp4", re.IGNORECASE),
+    re.compile(r"\.m3u8", re.IGNORECASE),
+    re.compile(r"\.mp3", re.IGNORECASE),
+    re.compile(r"\.flv", re.IGNORECASE),
+    re.compile(r"\.m4a", re.IGNORECASE),
+    re.compile(r"/video/", re.IGNORECASE),
+    re.compile(r"/play/", re.IGNORECASE),
+    re.compile(r"/stream/", re.IGNORECASE),
+    re.compile(r"/media/", re.IGNORECASE),
 ]
 
 
 class APIAnalyzer:
-    """接口分析器 - 分析接口特征并判定可复现性"""
+    """通用接口分析器 - 基于响应结构模式识别接口类型"""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
-        """初始化分析器
+    def __init__(self) -> None:
+        """初始化分析器"""
+        # 用于 DETAIL 识别时参考的列表元素平均字段数
+        self._list_element_field_counts: List[int] = []
 
-        Args:
-            llm_client: LLM 客户端实例，默认使用 DefaultLLMClient
-        """
-        self.llm_client = llm_client or DefaultLLMClient()
+    def classify_api_type(self, request: CapturedRequest) -> APIType:
+        """基于通用响应结构模式识别接口类型
 
-    def extract_parameters(self, request: CapturedRequest) -> List[Tuple[str, str, str]]:
-        """从请求中提取所有参数
-
-        提取来源：URL query、headers、body（JSON/form）、cookies
+        识别优先级：
+        1. MEDIA: 响应含媒体 URL 模式
+        2. PAGINATION: 请求含分页参数 + 响应含分页标识
+        3. LIST: 响应含数组，元素为结构化对象（含 id + 名称类字段）
+        4. DETAIL: 请求含 id 参数 + 响应字段数 > 列表元素字段数 * 1.5
+        5. CONFIG: 响应含 config/settings/version 字段
+        6. AUX: 其他
 
         Args:
             request: 捕获的请求对象
+
+        Returns:
+            APIType 枚举值
+        """
+        response_data = self._parse_response_body(request.response_body)
+        request_params = self._extract_all_params(request)
+
+        # 1. MEDIA 识别
+        if self._is_media_type(response_data):
+            return APIType.MEDIA
+
+        # 2. PAGINATION 识别
+        if self._is_pagination_type(request_params, response_data):
+            return APIType.PAGINATION
+
+        # 3. LIST 识别
+        if self._is_list_type(response_data):
+            return APIType.LIST
+
+        # 4. DETAIL 识别
+        if self._is_detail_type(request_params, response_data):
+            return APIType.DETAIL
+
+        # 5. CONFIG 识别
+        if self._is_config_type(response_data):
+            return APIType.CONFIG
+
+        # 6. AUX
+        return APIType.AUX
+
+    def classify_parameters(self, request: CapturedRequest) -> List[ParameterInfo]:
+        """将请求参数分为 static/session/dynamic 三类
+
+        分类规则：
+        - static: version, platform, os, brand, model, channel 等固定值
+        - session: token, userId, session, uid, authorization 等用户身份标识
+        - dynamic: sign, nonce, timestamp, signature, boxId 等每次请求值不同
+
+        Args:
+            request: 捕获的请求对象
+
+        Returns:
+            参数信息列表
+        """
+        raw_params = self._extract_raw_params(request)
+        classified: List[ParameterInfo] = []
+
+        for name, value, source in raw_params:
+            category = self._classify_single_param(name, value)
+            classified.append(ParameterInfo(
+                name=name,
+                value_sample=value,
+                category=category,
+                source=source,
+            ))
+
+        return classified
+
+    def detect_data_links(self, results: List[APIAnalysisResult]) -> List[DataLink]:
+        """检测接口间的数据链路关系
+
+        逻辑：
+        - 从 LIST 类型接口响应中提取 ID 字段值
+        - 检查 DETAIL 或 MEDIA 类型接口请求中是否使用了该 ID
+        - 建立调用链（list → detail → media）
+
+        Args:
+            results: 所有接口分析结果列表
+
+        Returns:
+            数据链路列表
+        """
+        links: List[DataLink] = []
+
+        # 收集 LIST 类型接口的 ID 值
+        list_results = [r for r in results if r.api_type == APIType.LIST]
+        detail_results = [r for r in results if r.api_type == APIType.DETAIL]
+        media_results = [r for r in results if r.api_type == APIType.MEDIA]
+
+        # 从 LIST 结果中提取 ID 值（需要原始请求数据）
+        # 由于 APIAnalysisResult 不包含原始响应，我们通过 request_id 关联
+        # 这里使用 _list_id_values 缓存（在 analyze_all 中填充）
+        list_ids: Dict[str, Set[str]] = getattr(self, "_list_id_values", {})
+
+        for list_endpoint, id_values in list_ids.items():
+            if not id_values:
+                continue
+
+            # 检查 DETAIL 接口
+            for detail_result in detail_results:
+                # 检查 detail 接口的参数中是否包含 list 中的 ID
+                for param in detail_result.parameters:
+                    if param.value_sample in id_values:
+                        links.append(DataLink(
+                            source_endpoint=list_endpoint,
+                            target_endpoint=detail_result.endpoint,
+                            link_field=param.name,
+                            link_type="list_to_detail",
+                        ))
+                        break
+
+            # 检查 MEDIA 接口
+            for media_result in media_results:
+                for param in media_result.parameters:
+                    if param.value_sample in id_values:
+                        links.append(DataLink(
+                            source_endpoint=list_endpoint,
+                            target_endpoint=media_result.endpoint,
+                            link_field=param.name,
+                            link_type="list_to_media",
+                        ))
+                        break
+
+        # 检查 detail → media 链路
+        detail_ids: Dict[str, Set[str]] = getattr(self, "_detail_id_values", {})
+        for detail_endpoint, id_values in detail_ids.items():
+            if not id_values:
+                continue
+            for media_result in media_results:
+                for param in media_result.parameters:
+                    if param.value_sample in id_values:
+                        links.append(DataLink(
+                            source_endpoint=detail_endpoint,
+                            target_endpoint=media_result.endpoint,
+                            link_field=param.name,
+                            link_type="detail_to_media",
+                        ))
+                        break
+
+        return links
+
+    def analyze_all(
+        self, requests: List[CapturedRequest], target: CaptureTarget
+    ) -> AnalysisReport:
+        """综合分析所有请求，结合用户目标数据描述
+
+        Args:
+            requests: 捕获的请求列表
+            target: 用户的抓取目标
+
+        Returns:
+            完整的分析报告
+        """
+        # 重置缓存
+        self._list_id_values: Dict[str, Set[str]] = {}
+        self._detail_id_values: Dict[str, Set[str]] = {}
+        self._list_element_field_counts = []
+
+        results: List[APIAnalysisResult] = []
+
+        # 按 endpoint 分组统计调用次数
+        endpoint_counts: Dict[str, int] = {}
+        for req in requests:
+            parsed = urlparse(req.url)
+            endpoint = parsed.path
+            endpoint_counts[endpoint] = endpoint_counts.get(endpoint, 0) + 1
+
+        # 去重：每个 endpoint 只分析一次（取第一个请求）
+        seen_endpoints: Set[str] = set()
+        unique_requests: List[CapturedRequest] = []
+        for req in requests:
+            parsed = urlparse(req.url)
+            endpoint = parsed.path
+            if endpoint not in seen_endpoints:
+                seen_endpoints.add(endpoint)
+                unique_requests.append(req)
+
+        # 第一遍：分类所有接口并收集 LIST 元素字段数
+        for req in unique_requests:
+            api_type = self.classify_api_type(req)
+            if api_type in (APIType.LIST, APIType.PAGINATION):
+                response_data = self._parse_response_body(req.response_body)
+                arr = self._find_main_array(response_data)
+                if arr and len(arr) > 0 and isinstance(arr[0], dict):
+                    self._list_element_field_counts.append(len(arr[0]))
+                    # 提取 ID 值
+                    parsed = urlparse(req.url)
+                    endpoint = parsed.path
+                    id_values = set()
+                    for item in arr:
+                        if isinstance(item, dict):
+                            for key in ("id", "Id", "ID", "item_id", "itemId"):
+                                if key in item and item[key] is not None:
+                                    id_values.add(str(item[key]))
+                                    break
+                    self._list_id_values[endpoint] = id_values
+
+        # 第二遍：完整分析（DETAIL 需要参考 LIST 字段数）
+        for req in unique_requests:
+            parsed = urlparse(req.url)
+            endpoint = parsed.path
+            call_count = endpoint_counts.get(endpoint, 1)
+
+            api_type = self.classify_api_type(req)
+            parameters = self.classify_parameters(req)
+
+            # 检查是否有签名
+            signature_fields = [
+                p.name for p in parameters if p.category == "dynamic"
+            ]
+            has_signature = len(signature_fields) > 0
+
+            # 检查是否匹配用户目标
+            matches_target = self._matches_user_target(
+                req, api_type, target
+            )
+
+            # 收集 DETAIL 接口的 ID 值（用于 detail→media 链路）
+            if api_type == APIType.DETAIL:
+                response_data = self._parse_response_body(req.response_body)
+                if isinstance(response_data, dict):
+                    id_values = set()
+                    for key in ("id", "Id", "ID", "item_id", "itemId"):
+                        if key in response_data and response_data[key] is not None:
+                            id_values.add(str(response_data[key]))
+                            break
+                    self._detail_id_values[endpoint] = id_values
+
+            results.append(APIAnalysisResult(
+                request_id=req.id,
+                endpoint=endpoint,
+                api_type=api_type,
+                parameters=parameters,
+                has_signature=has_signature,
+                signature_fields=signature_fields,
+                matches_target=matches_target,
+                call_count=call_count,
+            ))
+
+        # 检测数据链路
+        data_links = self.detect_data_links(results)
+
+        # 统计
+        target_matched = sum(1 for r in results if r.matches_target)
+
+        return AnalysisReport(
+            target=target,
+            results=results,
+            data_links=data_links,
+            total_captured=len(requests),
+            total_analyzed=len(results),
+            target_matched=target_matched,
+            generated_at=datetime.now(),
+        )
+
+    # ============================================================
+    # 内部方法：类型识别
+    # ============================================================
+
+    def _parse_response_body(self, response_body: Optional[str]) -> Any:
+        """解析响应体 JSON"""
+        if not response_body:
+            return None
+        try:
+            return json.loads(response_body)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def _extract_all_params(self, request: CapturedRequest) -> Dict[str, str]:
+        """提取请求中的所有参数（URL query + body）为扁平字典"""
+        params: Dict[str, str] = {}
+
+        # URL query params
+        parsed = urlparse(request.url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+        for name, values in query_params.items():
+            params[name.lower()] = values[0] if values else ""
+
+        # Body params
+        if request.body:
+            try:
+                body_data = json.loads(request.body)
+                if isinstance(body_data, dict):
+                    for key, value in body_data.items():
+                        params[key.lower()] = str(value)
+            except (json.JSONDecodeError, TypeError):
+                # Try form data
+                try:
+                    form_params = parse_qs(request.body, keep_blank_values=True)
+                    for name, values in form_params.items():
+                        params[name.lower()] = values[0] if values else ""
+                except Exception:
+                    pass
+
+        return params
+
+    def _is_media_type(self, response_data: Any) -> bool:
+        """检查响应是否包含媒体 URL 模式"""
+        if response_data is None:
+            return False
+        text = json.dumps(response_data) if not isinstance(response_data, str) else response_data
+        for pattern in MEDIA_URL_PATTERNS:
+            if pattern.search(text):
+                return True
+        return False
+
+    def _is_pagination_type(
+        self, request_params: Dict[str, str], response_data: Any
+    ) -> bool:
+        """检查是否为分页接口"""
+        # 请求必须含分页参数
+        has_pagination_param = any(
+            name in PAGINATION_PARAM_NAMES for name in request_params.keys()
+        )
+        if not has_pagination_param:
+            return False
+
+        # 响应必须含分页标识
+        if not isinstance(response_data, dict):
+            return False
+
+        response_fields = self._get_all_field_names(response_data)
+        has_pagination_indicator = any(
+            f.lower() in PAGINATION_RESPONSE_FIELDS for f in response_fields
+        )
+        return has_pagination_indicator
+
+    def _is_list_type(self, response_data: Any) -> bool:
+        """检查响应是否为列表类型
+
+        条件：响应含数组，数组元素为结构化对象（含 id 字段 + 至少一个名称类字段）
+        """
+        arr = self._find_main_array(response_data)
+        if arr is None or len(arr) == 0:
+            return False
+
+        # 检查第一个元素是否为结构化对象
+        first_elem = arr[0]
+        if not isinstance(first_elem, dict):
+            return False
+
+        # 检查是否含 id 字段
+        elem_keys_lower = {k.lower() for k in first_elem.keys()}
+        has_id = "id" in elem_keys_lower or any(
+            "id" in k for k in elem_keys_lower
+        )
+        if not has_id:
+            return False
+
+        # 检查是否含至少一个名称/标题类字段
+        has_name_field = any(
+            k.lower() in NAME_TITLE_FIELDS for k in first_elem.keys()
+        )
+        return has_name_field
+
+    def _is_detail_type(
+        self, request_params: Dict[str, str], response_data: Any
+    ) -> bool:
+        """检查是否为详情接口
+
+        条件：请求含 id 参数 + 响应字段数 > 列表元素字段数 * 1.5
+        """
+        # 请求必须含 id 参数
+        has_id_param = any(
+            "id" in name for name in request_params.keys()
+        )
+        if not has_id_param:
+            return False
+
+        # 响应必须是对象
+        if not isinstance(response_data, dict):
+            return False
+
+        # 获取响应字段数（递归展开一层）
+        response_field_count = self._count_fields(response_data)
+
+        # 与列表元素字段数比较
+        if self._list_element_field_counts:
+            avg_list_fields = sum(self._list_element_field_counts) / len(
+                self._list_element_field_counts
+            )
+            if avg_list_fields > 0 and response_field_count > avg_list_fields * 1.5:
+                return True
+
+        # 如果没有列表参考，但有 id 参数且响应字段较多（>5），也认为是 DETAIL
+        if response_field_count > 5:
+            return True
+
+        return False
+
+    def _is_config_type(self, response_data: Any) -> bool:
+        """检查响应是否为配置类型"""
+        if not isinstance(response_data, dict):
+            return False
+
+        all_fields = self._get_all_field_names(response_data)
+        has_config_field = any(
+            f.lower() in CONFIG_FIELDS for f in all_fields
+        )
+        return has_config_field
+
+    # ============================================================
+    # 内部方法：辅助函数
+    # ============================================================
+
+    def _find_main_array(self, data: Any) -> Optional[List]:
+        """在响应数据中查找主要数组
+
+        支持：
+        - 顶层就是数组
+        - 嵌套在 data/list/items/results 等字段中的数组
+        """
+        if isinstance(data, list):
+            return data
+
+        if isinstance(data, dict):
+            # 常见的数组字段名
+            array_field_names = [
+                "data", "list", "items", "results", "records",
+                "rows", "content", "entries", "elements",
+            ]
+            for field_name in array_field_names:
+                for key in data.keys():
+                    if key.lower() == field_name and isinstance(data[key], list):
+                        return data[key]
+
+            # 如果没找到，检查所有值中是否有数组
+            for value in data.values():
+                if isinstance(value, list) and len(value) > 0:
+                    if isinstance(value[0], dict):
+                        return value
+
+        return None
+
+    def _get_all_field_names(self, data: Dict) -> Set[str]:
+        """获取字典中所有字段名（包括一层嵌套）"""
+        fields: Set[str] = set()
+        if not isinstance(data, dict):
+            return fields
+
+        for key, value in data.items():
+            fields.add(key)
+            if isinstance(value, dict):
+                for sub_key in value.keys():
+                    fields.add(sub_key)
+
+        return fields
+
+    def _count_fields(self, data: Any) -> int:
+        """计算数据中的字段数量（顶层）"""
+        if isinstance(data, dict):
+            return len(data)
+        return 0
+
+    def _extract_raw_params(
+        self, request: CapturedRequest
+    ) -> List[Tuple[str, str, str]]:
+        """从请求中提取所有原始参数
 
         Returns:
             参数列表，每项为 (name, value, source) 元组
         """
         params: List[Tuple[str, str, str]] = []
 
-        # 1. 从 URL query string 提取
-        params.extend(self._extract_query_params(request.url))
-
-        # 2. 从 headers 提取（过滤标准头部）
-        params.extend(self._extract_header_params(request.headers))
-
-        # 3. 从 body 提取（JSON 或 form data）
-        params.extend(self._extract_body_params(request.body, request.headers))
-
-        # 4. 从 cookies 提取
-        params.extend(self._extract_cookie_params(request.headers))
-
-        return params
-
-    def _extract_query_params(self, url: str) -> List[Tuple[str, str, str]]:
-        """从 URL query string 中提取参数"""
-        params = []
-        parsed = urlparse(url)
+        # 1. URL query params
+        parsed = urlparse(request.url)
         query_params = parse_qs(parsed.query, keep_blank_values=True)
-
         for name, values in query_params.items():
-            # parse_qs 返回列表，取第一个值
             value = values[0] if values else ""
             params.append((name, value, "query"))
 
-        return params
-
-    def _extract_header_params(self, headers: dict) -> List[Tuple[str, str, str]]:
-        """从 headers 中提取非标准头部作为参数"""
-        params = []
-
-        for name, value in headers.items():
-            if name.lower() not in STANDARD_HEADERS and name.lower() != "cookie":
+        # 2. Headers (非标准头部)
+        standard_headers = {
+            "host", "connection", "content-length", "content-type",
+            "accept", "accept-encoding", "accept-language", "cache-control",
+            "user-agent", "referer", "origin",
+        }
+        for name, value in request.headers.items():
+            if name.lower() not in standard_headers:
                 params.append((name, str(value), "header"))
 
-        return params
-
-    def _extract_body_params(
-        self, body: Optional[bytes], headers: dict
-    ) -> List[Tuple[str, str, str]]:
-        """从请求体中提取参数（支持 JSON 和 form data）"""
-        if body is None:
-            return []
-
-        params = []
-        content_type = ""
-        for key, value in headers.items():
-            if key.lower() == "content-type":
-                content_type = value.lower()
-                break
-
-        # 尝试 JSON 解析
-        if "json" in content_type or not content_type:
+        # 3. Body params
+        if request.body:
             try:
-                body_str = body.decode("utf-8")
-                data = json.loads(body_str)
-                if isinstance(data, dict):
-                    for name, value in data.items():
-                        params.append((name, str(value), "body"))
-                    return params
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                pass
+                body_data = json.loads(request.body)
+                if isinstance(body_data, dict):
+                    for key, value in body_data.items():
+                        params.append((key, str(value), "body"))
+            except (json.JSONDecodeError, TypeError):
+                # Try form data
+                try:
+                    form_params = parse_qs(request.body, keep_blank_values=True)
+                    for name, values in form_params.items():
+                        value = values[0] if values else ""
+                        params.append((name, value, "body"))
+                except Exception:
+                    pass
 
-        # 尝试 form data 解析
-        if "form" in content_type or (not params and not content_type):
-            try:
-                body_str = body.decode("utf-8")
-                form_params = parse_qs(body_str, keep_blank_values=True)
-                for name, values in form_params.items():
-                    value = values[0] if values else ""
-                    params.append((name, value, "body"))
-            except UnicodeDecodeError:
-                pass
-
-        return params
-
-    def _extract_cookie_params(self, headers: dict) -> List[Tuple[str, str, str]]:
-        """从 Cookie 头部中提取 cookie 参数"""
-        params = []
-
-        cookie_value = None
-        for key, value in headers.items():
-            if key.lower() == "cookie":
-                cookie_value = value
-                break
-
+        # 4. Cookies
+        cookie_value = request.headers.get("Cookie") or request.headers.get("cookie")
         if cookie_value:
-            # 解析 Cookie 头部: "name1=value1; name2=value2"
             cookies = cookie_value.split(";")
             for cookie in cookies:
                 cookie = cookie.strip()
@@ -309,235 +627,79 @@ class APIAnalyzer:
 
         return params
 
-    def classify_parameter(
-        self, name: str, value: str, context: RequestContext
-    ) -> ParameterInfo:
+    def _classify_single_param(self, name: str, value: str) -> str:
         """对单个参数进行分类
 
-        分类规则优先级：
-        1. 名称匹配静态参数列表 -> static
-        2. 名称匹配会话参数模式 -> session
-        3. 名称匹配动态参数模式 -> dynamic
-        4. 值匹配动态值模式（hex/base64 哈希） -> dynamic
-        5. 来源为 cookie -> session
-        6. 无法确定 -> unknown
-
-        Args:
-            name: 参数名
-            value: 参数值
-            context: 请求上下文
-
         Returns:
-            ParameterInfo 对象
+            分类结果: "static", "session", "dynamic"
         """
-        # 检查静态参数
-        if name.lower() in STATIC_PARAM_NAMES:
-            return ParameterInfo(
-                name=name,
-                value_sample=value,
-                category="static",
-                source="",  # source will be set by caller
-                reasoning=f"参数名 '{name}' 匹配静态参数列表",
-            )
+        name_lower = name.lower()
 
-        # 检查会话参数模式
+        # 1. 静态参数
+        if name_lower in STATIC_PARAM_NAMES:
+            return "static"
+
+        # 2. 会话参数
         for pattern in SESSION_PARAM_PATTERNS:
             if pattern.match(name):
-                return ParameterInfo(
-                    name=name,
-                    value_sample=value,
-                    category="session",
-                    source="",
-                    reasoning=f"参数名 '{name}' 匹配会话参数模式",
-                )
+                return "session"
 
-        # 检查 Bearer token 值
-        if value.startswith("Bearer "):
-            return ParameterInfo(
-                name=name,
-                value_sample=value,
-                category="session",
-                source="",
-                reasoning=f"参数值包含 Bearer token",
-            )
-
-        # 检查动态参数名称模式
+        # 3. 动态参数（名称匹配）
         for pattern in DYNAMIC_PARAM_PATTERNS:
             if pattern.match(name):
-                return ParameterInfo(
-                    name=name,
-                    value_sample=value,
-                    category="dynamic",
-                    source="",
-                    reasoning=f"参数名 '{name}' 匹配动态参数模式",
-                )
+                return "dynamic"
 
-        # 检查动态值模式
-        for pattern in DYNAMIC_VALUE_PATTERNS:
-            if pattern.match(value):
-                return ParameterInfo(
-                    name=name,
-                    value_sample=value,
-                    category="dynamic",
-                    source="",
-                    reasoning=f"参数值匹配动态值模式（hash/签名）",
-                )
+        # 4. 动态参数（值模式：hex hash）
+        if re.match(r"^[0-9a-fA-F]{32}$", value):  # MD5
+            return "dynamic"
+        if re.match(r"^[0-9a-fA-F]{40}$", value):  # SHA1
+            return "dynamic"
+        if re.match(r"^[0-9a-fA-F]{64}$", value):  # SHA256
+            return "dynamic"
 
-        # 无法确定
-        return ParameterInfo(
-            name=name,
-            value_sample=value,
-            category="unknown",
-            source="",
-            reasoning=f"无法确定参数 '{name}' 的分类",
-        )
+        # 5. 默认归为 static（对于无法确定的参数，按设计文档要求只有三类）
+        return "static"
 
-    def determine_reproducibility(
-        self, params: List[ParameterInfo]
-    ) -> Tuple[str, str]:
-        """根据参数分类结果判定接口可复现性
+    def _matches_user_target(
+        self,
+        request: CapturedRequest,
+        api_type: APIType,
+        target: CaptureTarget,
+    ) -> bool:
+        """判断接口是否匹配用户目标
 
-        判定逻辑：
-        - 无动态参数且无未知参数 -> reproducible
-        - 有动态参数 -> complex
-        - 仅有未知参数 -> unknown
-
-        Args:
-            params: 参数信息列表
-
-        Returns:
-            (reproducibility, reason) 元组
+        基于用户的 target_data 描述和接口类型进行匹配
         """
-        dynamic_params = [p for p in params if p.category == "dynamic"]
-        unknown_params = [p for p in params if p.category == "unknown"]
+        if not target.target_data:
+            return False
 
-        if not dynamic_params and not unknown_params:
-            return ("reproducible", "所有参数均为静态或会话类型，可直接复现")
-        elif dynamic_params:
-            return ("complex", f"包含动态参数: {[p.name for p in dynamic_params]}")
-        else:
-            return ("unknown", f"包含未确定参数: {[p.name for p in unknown_params]}")
+        target_keywords = target.target_data.lower().split()
+        if not target_keywords:
+            return False
 
-    def _detect_purpose(self, url: str) -> str:
-        """从 URL 路径中检测接口用途"""
-        if isinstance(self.llm_client, DefaultLLMClient):
-            return self.llm_client.detect_purpose(url)
-
-        # 对于非默认客户端，使用基本的路径匹配
-        parsed = urlparse(url)
+        # 检查 URL 路径是否包含目标关键词
+        parsed = urlparse(request.url)
         path_lower = parsed.path.lower()
 
-        for pattern, purpose in DefaultLLMClient.PURPOSE_PATTERNS.items():
-            if pattern in path_lower:
-                return purpose
+        for keyword in target_keywords:
+            if len(keyword) > 2 and keyword in path_lower:
+                return True
 
-        return "unknown"
+        # 检查响应内容是否包含目标关键词
+        if request.response_body:
+            response_lower = request.response_body.lower()
+            match_count = sum(
+                1 for kw in target_keywords
+                if len(kw) > 2 and kw in response_lower
+            )
+            if match_count >= 2:
+                return True
 
-    async def analyze_single(self, request: CapturedRequest) -> APIAnalysisResult:
-        """分析单个请求
+        # LIST 和 DETAIL 类型更可能匹配用户目标
+        if api_type in (APIType.LIST, APIType.DETAIL, APIType.MEDIA):
+            # 检查 endpoint 中是否有相关词
+            for keyword in target_keywords:
+                if len(keyword) > 2 and keyword in path_lower:
+                    return True
 
-        流程：
-        1. 提取参数
-        2. 分类每个参数
-        3. 判定可复现性
-        4. 检测接口用途
-        5. 返回分析结果
-
-        Args:
-            request: 捕获的请求对象
-
-        Returns:
-            APIAnalysisResult 分析结果
-        """
-        # 1. 提取参数
-        raw_params = self.extract_parameters(request)
-
-        # 2. 分类每个参数
-        context = RequestContext(
-            url=request.url,
-            method=request.method,
-            content_type=request.headers.get("Content-Type", ""),
-        )
-
-        classified_params: List[ParameterInfo] = []
-        for name, value, source in raw_params:
-            param_info = self.classify_parameter(name, value, context)
-            # 设置来源
-            param_info.source = source
-            classified_params.append(param_info)
-
-        # 对 cookie 来源的未知参数，默认归类为 session
-        for param in classified_params:
-            if param.source == "cookie" and param.category == "unknown":
-                param.category = "session"
-                param.reasoning = "Cookie 来源参数默认归类为会话参数"
-
-        # 3. 判定可复现性
-        reproducibility, reason = self.determine_reproducibility(classified_params)
-
-        # 4. 检测接口用途
-        purpose = self._detect_purpose(request.url)
-
-        # 5. 提取 endpoint
-        parsed_url = urlparse(request.url)
-        endpoint = parsed_url.path
-
-        # 计算置信度
-        confidence = self._calculate_confidence(classified_params, purpose)
-
-        return APIAnalysisResult(
-            request_id=request.id,
-            endpoint=endpoint,
-            purpose=purpose,
-            parameters=classified_params,
-            reproducibility=reproducibility,
-            reproducibility_reason=reason,
-            confidence=confidence,
-        )
-
-    async def analyze_batch(
-        self, requests: List[CapturedRequest]
-    ) -> List[APIAnalysisResult]:
-        """批量分析请求
-
-        Args:
-            requests: 捕获的请求列表
-
-        Returns:
-            分析结果列表
-        """
-        results = []
-        for request in requests:
-            result = await self.analyze_single(request)
-            results.append(result)
-        return results
-
-    def _calculate_confidence(
-        self, params: List[ParameterInfo], purpose: str
-    ) -> float:
-        """计算分析置信度
-
-        基于：
-        - 参数分类确定性（unknown 越少置信度越高）
-        - 用途是否识别成功
-
-        Returns:
-            0.0 到 1.0 之间的置信度
-        """
-        if not params:
-            # 无参数时，如果用途已知则高置信度
-            return 0.8 if purpose != "unknown" else 0.5
-
-        unknown_count = sum(1 for p in params if p.category == "unknown")
-        unknown_ratio = unknown_count / len(params)
-
-        # 基础置信度
-        base_confidence = 1.0 - (unknown_ratio * 0.5)
-
-        # 用途识别加分
-        if purpose != "unknown":
-            base_confidence = min(1.0, base_confidence + 0.1)
-        else:
-            base_confidence = max(0.0, base_confidence - 0.1)
-
-        return round(base_confidence, 2)
+        return False

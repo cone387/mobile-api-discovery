@@ -2,113 +2,120 @@
 
 ## 简介
 
-AI 驱动的移动端接口抓取与代码生成系统。该系统通过 AI 操控真实移动设备触发 App 行为，利用 mitmproxy 抓取网络请求，再由 AI 分析接口特征并自动分类：可直接复现的接口生成 Python requests 代码进行批量抓取；复杂接口（含签名/加密）则继续通过客户端触发配合代理拦截保存数据。核心目标是以最低逆向成本，快速将 App 接口转化为可用数据源。
+AI 辅助的通用移动端接口抓取与分析系统。该系统适用于任意 App 的接口逆向分析场景。AI 首先引导用户明确抓取目标（什么 App、什么数据、哪些页面），然后自动完成 mitmproxy 代理环境配置，通知用户手动操作 App，最后分析录制的流量，自动过滤无关请求，基于通用的响应结构模式识别业务接口类型，并生成结构化的接口分析报告供其他 AI 或开发者使用。
+
+核心设计原则：
+- **通用性**：不绑定任何特定 App 或特定字段名，基于响应结构的通用模式进行接口识别
+- **用户驱动**：用户提供目标数据描述来指导分析重点
+- **AI 引导**：当用户需求不清晰时，AI 主动引导用户理清抓取目标
 
 ## 术语表
 
-- **Capture_System**: 本系统的整体名称，负责协调 AI 操控、流量抓取、接口分析和代码生成的完整流程
-- **Device_Controller**: 通过 MCP（Mobile Control Protocol）操控移动设备的模块，负责模拟用户在 App 中的真实操作行为
-- **Traffic_Interceptor**: 基于 mitmproxy 的流量拦截模块，负责捕获移动设备发出的所有 HTTP/HTTPS 请求与响应
-- **API_Analyzer**: AI 分析模块，负责对抓取到的请求进行分类、参数依赖分析和可复现性判断
-- **Code_Generator**: 代码生成模块，负责为可复现接口生成独立的 Python requests 调用代码
-- **Batch_Crawler**: 批量抓取执行器，运行 Code_Generator 生成的代码进行脱离设备的数据采集
-- **Replay_Controller**: 回放控制器，对无法直接复现的复杂接口，继续通过 Device_Controller 操作 App 触发请求并由 Traffic_Interceptor 拦截保存
-- **可复现接口**: 不依赖动态签名、加密参数或设备状态，可通过标准 HTTP 请求库独立调用的接口
-- **复杂接口**: 包含动态签名、加密参数、设备指纹或时效性 Token 等，无法脱离 App 环境独立调用的接口
-- **操作序列**: 一组有序的设备操作指令（点击、滑动、输入等），用于触发特定的 App 行为和接口请求
+- **Capture_System**: 本系统的整体名称，负责协调需求收集、环境准备、流量抓取、接口分析和报告生成的完整流程
+- **Requirement_Collector**: 需求收集模块，负责引导用户明确抓取目标，包括目标 App、期望数据、操作页面等
+- **Environment_Manager**: 环境管理模块，负责启动 mitmproxy、配置设备代理、安装 CA 证书等抓包环境准备工作
+- **Traffic_Interceptor**: 基于 mitmproxy 的流量拦截模块，负责在用户操作 App 期间捕获设备发出的所有 HTTP/HTTPS 请求与响应
+- **API_Analyzer**: 接口分析模块，负责对抓取到的请求进行过滤、分类、参数依赖分析和接口用途识别
+- **Report_Generator**: 报告生成模块，负责将分析结果输出为结构化的 Markdown 报告和请求样本文件，供其他 AI 使用
+- **列表接口**: 响应中包含数组数据的 API，数组元素为结构化对象（通常含 id、名称、图片等字段），不限定具体字段名
+- **分页接口**: 支持翻页加载的 API，请求中包含 page/pageFlag/offset/cursor 等分页参数，响应中包含 hasMore/totalPage/nextCursor 等分页标识
+- **详情接口**: 返回单条记录详细信息的 API，请求中包含 id 参数，响应中包含比列表更丰富的字段
+- **媒体接口**: 响应中包含媒体资源 URL（mp4、m3u8、audio 等格式）的 API
+- **业务接口**: 与 App 核心功能相关的 API，区别于 SDK 上报、广告、推送等第三方接口
+- **操作通知**: AI 完成环境准备后向用户发出的通知，告知用户可以开始在手机上操作 App
+- **目标数据描述**: 用户提供的期望抓取的数据说明，用于指导 AI 在分析阶段重点关注哪些接口
 
 ## 需求
 
-### 需求 1：设备操控与 App 行为触发
+### 需求 1：需求收集与引导
 
-**用户故事：** 作为数据工程师，我希望通过 AI 自动操控移动设备执行 App 操作，以便触发真实的接口请求。
-
-#### 验收标准
-
-1. WHEN 用户指定目标 App 和操作意图时，THE Device_Controller SHALL 通过 MCP 连接到目标移动设备并启动指定 App
-2. WHEN App 启动完成后，THE Device_Controller SHALL 根据 AI 生成的操作序列执行页面导航、按钮点击、列表滑动和详情进入等操作
-3. WHILE Device_Controller 执行操作序列期间，THE Traffic_Interceptor SHALL 持续捕获设备发出的所有 HTTP 和 HTTPS 请求及其完整响应
-4. WHEN 操作序列执行完毕时，THE Traffic_Interceptor SHALL 将所有捕获的请求-响应对以结构化格式存储到本地文件系统
-5. IF Device_Controller 无法连接到目标设备，THEN THE Capture_System SHALL 返回包含设备标识和连接失败原因的错误信息
-6. IF 操作序列中某一步骤执行失败，THEN THE Device_Controller SHALL 记录失败步骤信息并尝试继续执行后续步骤
-
-### 需求 2：流量捕获与存储
-
-**用户故事：** 作为数据工程师，我希望系统能完整捕获 App 的网络流量，以便后续进行接口分析。
+**用户故事：** 作为数据工程师，我希望 AI 能引导我明确抓取目标和操作计划，以便后续的抓包和分析能精准聚焦在我关心的接口上。
 
 #### 验收标准
 
-1. WHEN Traffic_Interceptor 启动时，THE Traffic_Interceptor SHALL 配置 mitmproxy 作为设备的网络代理并开始拦截流量
+1. WHEN 用户激活接口抓取任务时，THE Requirement_Collector SHALL 向用户询问目标 App 名称、期望获取的数据类型和需要操作的页面
+2. WHEN 用户的需求描述缺少目标 App 名称时，THE Requirement_Collector SHALL 主动询问用户要抓取哪个 App 的接口
+3. WHEN 用户的需求描述缺少期望数据类型时，THE Requirement_Collector SHALL 提供常见数据类型选项引导用户选择（如：列表数据、详情数据、搜索结果、媒体播放地址等）
+4. WHEN 用户的需求描述缺少操作页面说明时，THE Requirement_Collector SHALL 建议用户说明需要操作哪些页面（如：首页列表、搜索页、详情页、播放页等）
+5. WHEN 用户提供了完整的目标描述后，THE Requirement_Collector SHALL 生成操作计划摘要并请用户确认
+6. IF 用户一次性提供了完整的目标信息（App 名称、数据类型、操作页面），THEN THE Requirement_Collector SHALL 跳过逐步引导，直接确认并进入环境准备阶段
+
+### 需求 2：抓包环境准备
+
+**用户故事：** 作为数据工程师，我希望 AI 能自动完成抓包环境的配置和启动，以便我可以直接开始操作 App 而无需手动配置代理。
+
+#### 验收标准
+
+1. WHEN 用户指定目标设备标识符时，THE Environment_Manager SHALL 通过 adb 验证设备连接状态并返回连接结果
+2. WHEN 设备连接确认后，THE Environment_Manager SHALL 在设备上安装 mitmproxy 的 CA 证书到系统证书目录
+3. WHEN 证书安装完成后，THE Environment_Manager SHALL 通过 adb 将设备的 HTTP 代理设置为运行 mitmproxy 的主机地址和端口
+4. WHEN 代理设置完成后，THE Environment_Manager SHALL 启动 mitmdump 进程并加载流量捕获脚本
+5. WHEN mitmdump 进程启动成功后，THE Environment_Manager SHALL 向用户发送操作通知，包含环境配置结果和基于需求收集阶段确定的操作指引
+6. IF 设备连接失败，THEN THE Environment_Manager SHALL 返回包含设备标识和连接失败原因的错误信息
+7. IF CA 证书安装失败，THEN THE Environment_Manager SHALL 返回证书安装失败的具体原因并提供手动安装指引
+8. IF mitmdump 启动失败，THEN THE Environment_Manager SHALL 返回启动失败原因并建议检查端口占用情况
+
+### 需求 3：用户操作等待与流量录制
+
+**用户故事：** 作为数据工程师，我希望在环境准备好后自己操作 App，系统在后台持续录制流量，以便我能按自己的节奏触发需要分析的接口。
+
+#### 验收标准
+
+1. WHILE 用户在手机上操作 App 期间，THE Traffic_Interceptor SHALL 持续捕获设备发出的所有 HTTP 和 HTTPS 请求及其完整响应
 2. THE Traffic_Interceptor SHALL 为每个捕获的请求记录以下字段：请求方法、URL、请求头、请求体、响应状态码、响应头和响应体
-3. WHEN 捕获到请求时，THE Traffic_Interceptor SHALL 为每条记录附加时间戳和关联的操作步骤标识
-4. IF 设备未正确配置代理证书导致 HTTPS 解密失败，THEN THE Traffic_Interceptor SHALL 记录该请求的 URL 并标记为"未解密"
-5. WHEN 用户指定过滤规则时，THE Traffic_Interceptor SHALL 仅保存符合规则的请求（按域名、路径或内容类型过滤）
+3. WHEN 捕获到请求时，THE Traffic_Interceptor SHALL 为每条记录附加捕获时间戳
+4. WHEN 用户告知 AI 操作已完成时，THE Capture_System SHALL 停止流量录制并进入分析阶段
+5. IF 设备未正确配置代理证书导致 HTTPS 解密失败，THEN THE Traffic_Interceptor SHALL 记录该请求的 URL 并标记为"未解密"
+6. WHILE 流量录制进行期间，THE Traffic_Interceptor SHALL 将捕获的请求-响应对实时写入本地 JSON 文件
 
-### 需求 3：接口智能分析与分类
+### 需求 4：流量过滤
 
-**用户故事：** 作为数据工程师，我希望 AI 能自动分析抓取到的接口并判断其可复现性，以便我知道哪些接口可以用代码直接调用。
-
-#### 验收标准
-
-1. WHEN Traffic_Interceptor 完成一批流量捕获后，THE API_Analyzer SHALL 对所有捕获的请求进行语义分析，识别接口用途类别（如 feed 流、用户信息、评论、搜索等）
-2. WHEN 分析单个接口时，THE API_Analyzer SHALL 识别该接口依赖的所有参数，并将参数分为静态参数（固定值）、会话参数（Token/Cookie）和动态参数（签名/加密/时间戳）三类
-3. WHEN 参数分析完成后，THE API_Analyzer SHALL 根据以下规则判定接口可复现性：仅包含静态参数和会话参数的接口标记为"可复现"；包含动态签名或加密参数的接口标记为"复杂接口"
-4. THE API_Analyzer SHALL 为每个分析完成的接口生成分析报告，包含：接口用途、参数列表及分类、可复现性判定结果和判定依据
-5. IF API_Analyzer 无法确定某个参数的类型，THEN THE API_Analyzer SHALL 将该参数标记为"待确认"并在报告中说明原因
-
-### 需求 4：可复现接口的代码生成
-
-**用户故事：** 作为数据工程师，我希望系统能为可复现的接口自动生成 Python 请求代码，以便我可以脱离手机进行批量数据采集。
+**用户故事：** 作为数据工程师，我希望系统能自动过滤掉无关的第三方 SDK 流量和静态资源请求，以便分析阶段只处理真正的业务接口。
 
 #### 验收标准
 
-1. WHEN API_Analyzer 将接口标记为"可复现"时，THE Code_Generator SHALL 为该接口生成可独立运行的 Python requests 代码
-2. THE Code_Generator SHALL 在生成的代码中包含：完整的请求头设置、参数构造、错误处理和响应解析逻辑
-3. WHEN 接口依赖会话参数时，THE Code_Generator SHALL 在生成的代码中将会话参数提取为可配置变量，并添加注释说明获取方式
-4. WHEN 代码生成完成后，THE Code_Generator SHALL 使用捕获的原始请求参数执行一次验证请求，确认生成的代码能获得与原始请求一致的响应结构
-5. IF 验证请求失败，THEN THE Code_Generator SHALL 将该接口重新标记为"复杂接口"并记录失败原因
+1. WHEN 捕获到请求时，THE Traffic_Interceptor SHALL 根据响应 Content-Type 过滤掉静态资源请求（image、font、video、audio、css、javascript 类型）
+2. WHEN 捕获到请求时，THE Traffic_Interceptor SHALL 根据域名黑名单过滤掉第三方 SDK 请求（数据上报、崩溃上报、广告、推送、性能监控、设备指纹等通用 SDK 域名）
+3. WHEN 捕获到请求时，THE Traffic_Interceptor SHALL 根据路径黑名单过滤掉已知的非业务路径（SDK 初始化、埋点上报等通用路径模式）
+4. THE Traffic_Interceptor SHALL 仅保存响应 Content-Type 包含 json 的请求，或 URL 路径匹配已知 API 模式（含 /api/、/v1/、/v2/、/v3/、/portal/、/gateway/ 等）的请求
+5. WHEN 用户指定额外的过滤规则时，THE Traffic_Interceptor SHALL 将用户指定的域名加入白名单或黑名单
 
-### 需求 5：批量数据采集执行
+### 需求 5：接口智能分析与分类
 
-**用户故事：** 作为数据工程师，我希望能使用生成的代码进行批量数据采集，以便高效获取大量数据。
-
-#### 验收标准
-
-1. WHEN 用户启动批量采集任务时，THE Batch_Crawler SHALL 加载指定接口的生成代码并按用户配置的并发数和请求间隔执行批量请求
-2. THE Batch_Crawler SHALL 将采集到的数据以 JSON 格式存储，每条记录包含请求参数、响应数据和采集时间戳
-3. WHILE 批量采集执行期间，THE Batch_Crawler SHALL 监控请求成功率，当连续失败次数超过用户配置的阈值时暂停采集并通知用户
-4. IF 采集过程中检测到接口返回认证失败响应，THEN THE Batch_Crawler SHALL 暂停当前任务并提示用户更新会话参数
-
-### 需求 6：复杂接口的客户端触发采集
-
-**用户故事：** 作为数据工程师，我希望对于无法直接复现的复杂接口，系统能继续通过操控 App 来采集数据，以便不遗漏任何需要的数据。
+**用户故事：** 作为数据工程师，我希望 AI 能基于通用的响应结构模式自动识别接口类型，以便我快速了解 App 的接口结构。
 
 #### 验收标准
 
-1. WHEN API_Analyzer 将接口标记为"复杂接口"时，THE Replay_Controller SHALL 生成针对该接口的操作序列，定义触发该接口所需的 App 操作步骤
-2. WHEN 用户启动复杂接口采集任务时，THE Replay_Controller SHALL 通过 Device_Controller 按操作序列重复执行 App 操作，同时由 Traffic_Interceptor 拦截并保存目标接口的响应数据
-3. THE Replay_Controller SHALL 支持用户配置采集轮次和每轮之间的等待间隔
-4. IF 操作序列执行后未能捕获到目标接口的请求，THEN THE Replay_Controller SHALL 重试一次，若仍失败则标记该接口为"采集失败"并记录原因
+1. WHEN 用户告知操作完成后，THE API_Analyzer SHALL 读取所有捕获的请求-响应数据并结合用户的目标数据描述进行分析
+2. WHEN 分析单个接口时，THE API_Analyzer SHALL 基于响应体的通用结构模式识别接口类型：响应含数组且数组元素为结构化对象（含 id 字段和至少一个名称类字段）的标记为"列表接口"；请求含分页参数（page/offset/cursor/pageFlag）且响应含分页标识（hasMore/totalPage/nextCursor/total）的标记为"分页接口"；请求含 id 参数且响应字段数量明显多于列表元素的标记为"详情接口"；响应含媒体 URL 模式（.mp4/.m3u8/.mp3 或含 video/play/stream 路径）的标记为"媒体接口"
+3. WHEN 分析接口参数时，THE API_Analyzer SHALL 将请求参数分为三类：静态参数（version、platform、os、brand 等固定值）、会话参数（token、userId、session 等用户身份标识）和动态参数（sign、nonce、timestamp 等每次请求值不同的参数）
+4. THE API_Analyzer SHALL 自动识别接口间的数据链路关系：从列表接口响应中提取 ID 字段，检查详情接口或媒体接口请求中是否使用了该 ID，建立接口间的调用链
+5. THE API_Analyzer SHALL 结合用户的目标数据描述，在分析报告中标注哪些接口与用户目标最相关
+6. IF API_Analyzer 在捕获的数据中未找到与用户目标匹配的接口，THEN THE API_Analyzer SHALL 在分析报告中明确说明未找到目标接口，并列出所有已识别的业务接口供用户判断
 
-### 需求 7：分析报告与结果输出
+### 需求 6：分析报告生成
 
-**用户故事：** 作为数据工程师，我希望系统能生成完整的分析报告，以便我了解所有接口的状态和采集结果。
-
-#### 验收标准
-
-1. WHEN 一次完整的抓取-分析流程结束后，THE Capture_System SHALL 生成汇总报告，包含：总接口数量、可复现接口数量、复杂接口数量和各接口的分析摘要
-2. THE Capture_System SHALL 将报告以 Markdown 格式输出到用户指定的路径
-3. WHEN 用户请求查看特定接口详情时，THE Capture_System SHALL 展示该接口的完整分析报告、生成的代码（如有）和采集状态
-
-### 需求 8：通用 Skill 封装与集成
-
-**用户故事：** 作为开发者，我希望将整个流程封装为通用的 AI skill，以便在任何支持 skill 规范的 AI 开发环境中（包括但不限于 Kiro）通过自然语言指令快速启动和执行接口抓取任务。
+**用户故事：** 作为数据工程师，我希望系统能生成结构化的接口分析报告，以便其他 AI 或开发者可以直接参考该报告理解和调用这些接口。
 
 #### 验收标准
 
-1. THE Capture_System SHALL 提供符合通用 skill 规范的配置文件，包含 skill 元数据（名称、描述、版本、关键词）、触发条件、输入参数定义和执行流程描述
-2. THE Capture_System SHALL 将 skill 配置以 Markdown 格式的指令文件呈现，定义 AI 代理在执行该 skill 时应遵循的步骤、约束和决策逻辑
-3. WHEN 用户在 AI 开发环境中激活该 skill 时，THE Capture_System SHALL 通过 skill 指令引导 AI 代理收集目标 App 信息、设备连接参数和采集目标
-4. THE Capture_System SHALL 将完整的三阶段流程（操控触发、分析分类、分路径采集）封装为 skill 指令中的执行步骤，支持逐步推进或一键执行全流程
-5. IF skill 执行过程中需要用户决策（如确认接口分类结果），THEN THE Capture_System SHALL 在 skill 指令中定义暂停点，要求 AI 代理向用户展示决策所需的上下文信息并等待确认
-6. THE Capture_System SHALL 提供 skill 的依赖声明，列出所需的外部工具（mitmproxy、MCP 服务器）和 Python 包，以便在不同环境中快速配置
+1. WHEN 接口分析完成后，THE Report_Generator SHALL 生成 Markdown 格式的接口分析报告，保存到 output/analysis/ 目录
+2. THE Report_Generator SHALL 在报告中包含以下内容：数据链路图（接口间的调用关系）、接口概览表（路径、用途、类型、调用次数）、每个接口的详细分析（请求参数表、响应结构概览、列表数据的第一条记录字段示例）
+3. THE Report_Generator SHALL 为每个接口生成可直接执行的 cURL 命令，包含完整的请求头和参数
+4. THE Report_Generator SHALL 将每个接口的完整请求和响应 JSON 保存到 output/analysis/samples/ 目录，并在报告中以相对路径引用
+5. THE Report_Generator SHALL 在报告中包含签名机制说明，标注哪些接口包含动态签名参数以及签名字段的组成
+6. WHEN 报告生成完成后，THE Capture_System SHALL 向用户展示报告摘要和文件保存路径
+7. THE Report_Generator SHALL 确保报告格式适合其他 AI 解析，使用清晰的标题层级、表格和代码块
+
+### 需求 7：通用 Skill 封装
+
+**用户故事：** 作为开发者，我希望将整个流程封装为通用的 AI skill，以便在支持 skill 规范的 AI 开发环境中通过自然语言指令快速启动任意 App 的接口抓取任务。
+
+#### 验收标准
+
+1. THE Capture_System SHALL 提供符合通用 skill 规范的 Markdown 格式指令文件，包含 skill 元数据（名称、描述、版本、关键词）、触发条件、输入参数定义和执行流程描述
+2. THE Capture_System SHALL 在 skill 指令中定义四阶段执行流程：需求收集与引导、环境准备、等待用户操作、分析与报告生成
+3. WHEN 用户在 AI 开发环境中激活该 skill 时，THE Capture_System SHALL 通过 skill 指令引导 AI 代理首先收集用户的抓取目标，再收集设备连接参数
+4. THE Capture_System SHALL 在 skill 指令中定义暂停点：需求确认后开始环境准备，环境准备完成后通知用户开始操作，用户操作完成后开始分析
+5. THE Capture_System SHALL 提供 skill 的依赖声明，列出所需的外部工具（mitmproxy、adb）和 Python 包
+6. THE Capture_System SHALL 在 skill 指令中明确说明该流程不使用 Mobile MCP 操控设备，由用户手动操作 App

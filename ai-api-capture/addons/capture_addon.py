@@ -1,14 +1,22 @@
-"""mitmproxy addon 脚本 - 请求/响应捕获、字段记录、步骤 ID 关联
+"""mitmproxy addon 脚本 - 4 层过滤 + JSON 文件存储
 
 本模块实现 mitmproxy 的 addon 接口，用于：
 - 捕获 HTTP 请求/响应对
-- 记录所有必要字段（method, URL, headers, body, response status 等）
-- 将每个请求与当前操作步骤 ID 关联
-- 将捕获数据保存为 JSON 文件
-- 支持过滤规则（域名、路径、Content-Type）
-- 处理 HTTPS 解密失败
+- 实现 4 层过滤逻辑：静态资源过滤、域名黑名单、路径黑名单、API 白名单
+- 将每个通过过滤的请求保存为独立 JSON 文件
+- 记录 HTTPS 解密失败的请求
+- 响应体以文本形式存储（JSON 响应）
 
-可作为 mitmdump addon 独立使用，也可通过 TrafficInterceptor 编程调用。
+作为 mitmdump addon 独立运行（不导入 src/models.py），
+通过环境变量或命令行参数配置。
+
+使用方式：
+    mitmdump -s capture_addon.py
+
+环境变量配置：
+    CAPTURE_STORAGE_PATH: 存储路径（默认: ./output/captures）
+    CAPTURE_USER_DOMAIN_WHITELIST: 逗号分隔的用户域名白名单
+    CAPTURE_USER_DOMAIN_BLACKLIST: 逗号分隔的用户域名黑名单
 """
 
 import json
@@ -22,48 +30,100 @@ from urllib.parse import urlparse
 from mitmproxy import http, tls
 
 
+# ============================================================
+# 过滤规则（独立定义，不依赖 src/models.py）
+# ============================================================
+
+# 第 1 层：静态资源 Content-Type 黑名单
+DEFAULT_CONTENT_TYPE_BLACKLIST = [
+    "image/", "font/", "video/", "audio/", "text/css", "application/javascript",
+]
+
+# 第 2 层：域名黑名单（第三方 SDK：数据上报、崩溃上报、广告、推送、性能监控等）
+DEFAULT_DOMAIN_BLACKLIST = [
+    "analytics.oceanengine.com",
+    "sss.umeng.com",
+    "tracking.miui.com",
+    "pro.bugly.qq.com",
+    "bugly.qq.com",
+    "pbaccess.video.qq.com",
+    "amdcopen.m.taobao.com",
+    "gepush.com",
+    "sdk-open-phone.getui.com",
+    "tingyun.com",
+    "wkdcm1.tingyun.com",
+    "203.107.1.1",
+    "cbsipv4.shuzilm.cn",
+    "mssdk",
+    "polaris",
+    "gecko.zijieapi.com",
+    "report.mumu.nie.netease.com",
+    "api.mumu.nie.netease.com",
+]
+
+# 第 3 层：路径黑名单（已知非业务路径）
+DEFAULT_PATH_BLACKLIST = [
+    "/sdk/app/",
+    "/reportBatchData",
+    "/upload-json",
+    "/api/v2/al",
+    "/api/v1/attribute",
+    "/api/collection",
+    "/getMobileRedirectHost",
+    "/initMobileApp",
+    "/track/v4",
+]
+
+# 第 4 层：API 白名单
+DEFAULT_CONTENT_TYPE_WHITELIST = ["json"]
+DEFAULT_API_PATH_PATTERNS = ["/api/", "/v1/", "/v2/", "/v3/", "/portal/", "/gateway/"]
+
+
 @dataclass
 class FilterRules:
-    """过滤规则配置
+    """过滤规则配置（独立于 src/models.py，用于 mitmdump addon 进程）
 
     Attributes:
-        domains: 允许的域名列表（空列表表示允许所有域名）
-        paths: 允许的路径前缀列表（空列表表示允许所有路径）
-        content_types: 允许的 Content-Type 列表（空列表表示允许所有类型）
+        content_type_blacklist: 静态资源 Content-Type 黑名单
+        domain_blacklist: 域名黑名单
+        path_blacklist: 路径黑名单
+        content_type_whitelist: API Content-Type 白名单
+        api_path_patterns: API 路径模式白名单
+        user_domain_whitelist: 用户指定的域名白名单
+        user_domain_blacklist: 用户指定的域名黑名单
     """
 
-    domains: List[str] = field(default_factory=list)
-    paths: List[str] = field(default_factory=list)
-    content_types: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        """序列化为字典"""
-        return {
-            "domains": self.domains,
-            "paths": self.paths,
-            "content_types": self.content_types,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "FilterRules":
-        """从字典反序列化"""
-        return cls(
-            domains=data.get("domains", []),
-            paths=data.get("paths", []),
-            content_types=data.get("content_types", []),
-        )
+    content_type_blacklist: List[str] = field(
+        default_factory=lambda: list(DEFAULT_CONTENT_TYPE_BLACKLIST)
+    )
+    domain_blacklist: List[str] = field(
+        default_factory=lambda: list(DEFAULT_DOMAIN_BLACKLIST)
+    )
+    path_blacklist: List[str] = field(
+        default_factory=lambda: list(DEFAULT_PATH_BLACKLIST)
+    )
+    content_type_whitelist: List[str] = field(
+        default_factory=lambda: list(DEFAULT_CONTENT_TYPE_WHITELIST)
+    )
+    api_path_patterns: List[str] = field(
+        default_factory=lambda: list(DEFAULT_API_PATH_PATTERNS)
+    )
+    user_domain_whitelist: Optional[List[str]] = None
+    user_domain_blacklist: Optional[List[str]] = None
 
 
 class CaptureAddon:
-    """mitmproxy addon，用于捕获 HTTP 请求/响应并保存为 JSON 文件。
+    """mitmproxy addon，实现 4 层过滤并将请求保存为独立 JSON 文件。
 
-    该 addon 拦截经过代理的所有 HTTP 流量，根据过滤规则筛选后，
-    将请求-响应对序列化为 JSON 文件存储到指定路径。
+    过滤逻辑：
+    1. 静态资源过滤：Content-Type 为 image/、font/、video/、audio/、text/css、application/javascript
+    2. 域名黑名单：第三方 SDK 域名（数据上报、崩溃上报、广告、推送、性能监控等）
+    3. 路径黑名单：已知非业务路径（/sdk/app/、/reportBatchData、/track/v4 等）
+    4. API 白名单：Content-Type 含 json，或路径含 /api/、/v1/、/v2/、/v3/、/portal/、/gateway/
 
     Attributes:
         storage_path: JSON 文件存储目录路径
         filter_rules: 过滤规则配置
-        current_step_id: 当前操作步骤 ID（由 DeviceController 更新）
     """
 
     def __init__(self, storage_path: str, filter_rules: Optional[FilterRules] = None):
@@ -71,33 +131,21 @@ class CaptureAddon:
 
         Args:
             storage_path: 捕获数据的存储目录路径
-            filter_rules: 过滤规则，为 None 时使用默认规则（允许所有）
+            filter_rules: 过滤规则，为 None 时使用默认规则
         """
         self.storage_path = storage_path
         self.filter_rules = filter_rules or FilterRules()
-        self.current_step_id: Optional[str] = None
         self._captured_requests: List[dict] = []
         self._tls_failures: List[dict] = []
 
         # 确保存储目录存在
         os.makedirs(self.storage_path, exist_ok=True)
 
-    def set_step_id(self, step_id: Optional[str]) -> None:
-        """更新当前操作步骤 ID。
-
-        由 DeviceController 在执行操作步骤时调用，
-        后续捕获的请求将关联到此步骤 ID。
-
-        Args:
-            step_id: 操作步骤 ID，None 表示无关联步骤
-        """
-        self.current_step_id = step_id
-
     def get_captured_requests(self) -> List[dict]:
-        """获取所有已捕获的请求列表。
+        """获取所有已捕获的请求列表（内存中的）。
 
         Returns:
-            捕获的请求字典列表，每个字典包含 CapturedRequest 的所有字段
+            捕获的请求字典列表
         """
         return list(self._captured_requests)
 
@@ -114,128 +162,30 @@ class CaptureAddon:
         self._captured_requests.clear()
         self._tls_failures.clear()
 
-    def request(self, flow: http.HTTPFlow) -> None:
-        """mitmproxy 请求钩子 - 记录请求开始时间和步骤 ID。
-
-        在请求发出时记录元数据，供后续 response 钩子使用。
-
-        Args:
-            flow: mitmproxy HTTP 流对象
-        """
-        flow.metadata["capture_time"] = datetime.now().isoformat()
-        flow.metadata["step_id"] = self.current_step_id
-
     def response(self, flow: http.HTTPFlow) -> None:
-        """mitmproxy 响应钩子 - 捕获并保存匹配过滤规则的请求/响应对。
+        """mitmproxy 响应钩子 - 应用 4 层过滤并保存匹配的请求。
 
         Args:
             flow: mitmproxy HTTP 流对象（包含请求和响应）
         """
-        if self._matches_filter(flow):
+        if self._should_capture(flow):
             self._save_flow(flow)
 
     def tls_failed_client_hello(self, client_hello: tls.ClientHelloData) -> None:
         """mitmproxy TLS 失败钩子 - 记录 HTTPS 解密失败。
 
-        当客户端 TLS 握手失败时调用，标记该连接的请求为未解密。
-
         Args:
             client_hello: TLS ClientHello 数据
         """
+        sni = "unknown"
+        if client_hello.context and client_hello.context.client:
+            sni = client_hello.context.client.sni or "unknown"
+
         failure_record = {
             "id": str(uuid.uuid4()),
             "timestamp": datetime.now().isoformat(),
-            "operation_step_id": self.current_step_id or "",
-            "client_sni": client_hello.context.client.sni if client_hello.context.client.sni else "unknown",
-            "is_decrypted": False,
-        }
-        self._tls_failures.append(failure_record)
-        self._save_tls_failure(failure_record)
-
-    def _matches_filter(self, flow: http.HTTPFlow) -> bool:
-        """检查请求是否匹配过滤规则。
-
-        过滤逻辑：
-        - 如果某个过滤列表为空，表示该维度不过滤（允许所有）
-        - 如果某个过滤列表非空，请求必须匹配列表中的至少一项
-
-        Args:
-            flow: mitmproxy HTTP 流对象
-
-        Returns:
-            True 表示请求匹配过滤规则，应该被保存
-        """
-        parsed_url = urlparse(flow.request.pretty_url)
-
-        # 域名过滤
-        if self.filter_rules.domains:
-            hostname = parsed_url.hostname or ""
-            if not any(hostname == domain or hostname.endswith("." + domain)
-                       for domain in self.filter_rules.domains):
-                return False
-
-        # 路径前缀过滤
-        if self.filter_rules.paths:
-            path = parsed_url.path
-            if not any(path.startswith(prefix) for prefix in self.filter_rules.paths):
-                return False
-
-        # Content-Type 过滤（检查响应的 Content-Type）
-        if self.filter_rules.content_types:
-            response_content_type = flow.response.headers.get("content-type", "") if flow.response else ""
-            if not any(ct in response_content_type for ct in self.filter_rules.content_types):
-                return False
-
-        return True
-
-    def _save_flow(self, flow: http.HTTPFlow) -> None:
-        """将 HTTP 流保存为 JSON 文件。
-
-        生成唯一 ID，构建 CapturedRequest 格式的字典，
-        同时保存到内存列表和磁盘文件。
-
-        Args:
-            flow: mitmproxy HTTP 流对象
-        """
-        import base64
-
-        request_id = str(uuid.uuid4())
-
-        # 获取请求体
-        request_body = flow.request.content
-        # 获取响应体
-        response_body = flow.response.content if flow.response else None
-
-        captured = {
-            "id": request_id,
-            "timestamp": flow.metadata.get("capture_time", datetime.now().isoformat()),
-            "operation_step_id": flow.metadata.get("step_id", "") or "",
-            "method": flow.request.method,
-            "url": flow.request.pretty_url,
-            "headers": dict(flow.request.headers),
-            "body": base64.b64encode(request_body).decode("ascii") if request_body else None,
-            "response_status": flow.response.status_code if flow.response else 0,
-            "response_headers": dict(flow.response.headers) if flow.response else {},
-            "response_body": base64.b64encode(response_body).decode("ascii") if response_body else None,
-            "is_decrypted": True,
-        }
-
-        self._captured_requests.append(captured)
-        self._write_json_file(request_id, captured)
-
-    def _save_tls_failure(self, failure_record: dict) -> None:
-        """将 TLS 失败记录保存为 JSON 文件。
-
-        Args:
-            failure_record: TLS 失败记录字典
-        """
-        # 为 TLS 失败创建一个最小化的 CapturedRequest 格式记录
-        captured = {
-            "id": failure_record["id"],
-            "timestamp": failure_record["timestamp"],
-            "operation_step_id": failure_record["operation_step_id"],
             "method": "CONNECT",
-            "url": f"https://{failure_record['client_sni']}/",
+            "url": f"https://{sni}/",
             "headers": {},
             "body": None,
             "response_status": 0,
@@ -243,9 +193,145 @@ class CaptureAddon:
             "response_body": None,
             "is_decrypted": False,
         }
+        self._tls_failures.append(failure_record)
+        self._captured_requests.append(failure_record)
+        self._write_json_file(failure_record["id"], failure_record)
+
+    def _should_capture(self, flow: http.HTTPFlow) -> bool:
+        """应用 4 层过滤逻辑判断是否应捕获该请求。
+
+        过滤顺序：
+        1. 静态资源过滤
+        2. 域名黑名单
+        3. 路径黑名单
+        4. API 白名单
+
+        Args:
+            flow: mitmproxy HTTP 流对象
+
+        Returns:
+            True 表示应捕获该请求
+        """
+        parsed_url = urlparse(flow.request.pretty_url)
+        hostname = parsed_url.hostname or ""
+        path = parsed_url.path or ""
+
+        # 获取响应 Content-Type
+        response_content_type = ""
+        if flow.response and flow.response.headers:
+            response_content_type = flow.response.headers.get("content-type", "").lower()
+
+        # === 用户域名白名单（如果设置了，只保留白名单中的域名）===
+        if self.filter_rules.user_domain_whitelist:
+            if not self._domain_matches_list(hostname, self.filter_rules.user_domain_whitelist):
+                return False
+
+        # === 用户域名黑名单 ===
+        if self.filter_rules.user_domain_blacklist:
+            if self._domain_matches_list(hostname, self.filter_rules.user_domain_blacklist):
+                return False
+
+        # === 第 1 层：静态资源过滤 ===
+        if self._is_static_resource(response_content_type):
+            return False
+
+        # === 第 2 层：域名黑名单 ===
+        if self._is_blacklisted_domain(hostname):
+            return False
+
+        # === 第 3 层：路径黑名单 ===
+        if self._is_blacklisted_path(path):
+            return False
+
+        # === 第 4 层：API 白名单 ===
+        if not self._matches_api_whitelist(response_content_type, path):
+            return False
+
+        return True
+
+    def _is_static_resource(self, content_type: str) -> bool:
+        """检查 Content-Type 是否为静态资源。"""
+        for blacklisted in self.filter_rules.content_type_blacklist:
+            if blacklisted.lower() in content_type:
+                return True
+        return False
+
+    def _is_blacklisted_domain(self, hostname: str) -> bool:
+        """检查域名是否在黑名单中。"""
+        return self._domain_matches_list(hostname, self.filter_rules.domain_blacklist)
+
+    def _is_blacklisted_path(self, path: str) -> bool:
+        """检查路径是否在黑名单中（包含匹配）。"""
+        for blacklisted_path in self.filter_rules.path_blacklist:
+            if blacklisted_path in path:
+                return True
+        return False
+
+    def _matches_api_whitelist(self, content_type: str, path: str) -> bool:
+        """检查是否匹配 API 白名单（Content-Type 含 json 或路径匹配 API 模式）。"""
+        # 检查 Content-Type 白名单
+        for whitelisted in self.filter_rules.content_type_whitelist:
+            if whitelisted.lower() in content_type:
+                return True
+
+        # 检查 API 路径模式
+        for pattern in self.filter_rules.api_path_patterns:
+            if pattern in path:
+                return True
+
+        return False
+
+    @staticmethod
+    def _domain_matches_list(hostname: str, domain_list: List[str]) -> bool:
+        """检查主机名是否匹配域名列表中的任一项（精确匹配或子域名匹配）。"""
+        if not hostname:
+            return False
+        for domain in domain_list:
+            if hostname == domain or hostname.endswith("." + domain):
+                return True
+        return False
+
+    def _save_flow(self, flow: http.HTTPFlow) -> None:
+        """将 HTTP 流保存为 JSON 文件。
+
+        响应体以文本形式存储（JSON 响应直接存文本）。
+
+        Args:
+            flow: mitmproxy HTTP 流对象
+        """
+        request_id = str(uuid.uuid4())
+
+        # 获取请求体（文本形式）
+        request_body = None
+        if flow.request.content:
+            try:
+                request_body = flow.request.content.decode("utf-8", errors="replace")
+            except Exception:
+                request_body = None
+
+        # 获取响应体（文本形式）
+        response_body = None
+        if flow.response and flow.response.content:
+            try:
+                response_body = flow.response.content.decode("utf-8", errors="replace")
+            except Exception:
+                response_body = None
+
+        captured = {
+            "id": request_id,
+            "timestamp": datetime.now().isoformat(),
+            "method": flow.request.method,
+            "url": flow.request.pretty_url,
+            "headers": dict(flow.request.headers),
+            "body": request_body,
+            "response_status": flow.response.status_code if flow.response else 0,
+            "response_headers": dict(flow.response.headers) if flow.response else {},
+            "response_body": response_body,
+            "is_decrypted": True,
+        }
 
         self._captured_requests.append(captured)
-        self._write_json_file(failure_record["id"], captured)
+        self._write_json_file(request_id, captured)
 
     def _write_json_file(self, request_id: str, data: dict) -> None:
         """将数据写入 JSON 文件。
@@ -255,43 +341,48 @@ class CaptureAddon:
             data: 要写入的字典数据
         """
         filepath = os.path.join(self.storage_path, f"{request_id}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            # 写入失败时静默跳过（不中断录制）
+            pass
 
 
 # === mitmdump 独立运行支持 ===
 # 当作为 mitmdump addon 使用时（mitmdump -s capture_addon.py），
 # 通过环境变量配置参数
 
+
 def _create_addon_from_env() -> CaptureAddon:
     """从环境变量创建 CaptureAddon 实例。
 
     环境变量：
         CAPTURE_STORAGE_PATH: 存储路径（默认: ./output/captures）
-        CAPTURE_FILTER_DOMAINS: 逗号分隔的域名列表
-        CAPTURE_FILTER_PATHS: 逗号分隔的路径前缀列表
-        CAPTURE_FILTER_CONTENT_TYPES: 逗号分隔的 Content-Type 列表
-        CAPTURE_STEP_ID: 初始步骤 ID
+        CAPTURE_USER_DOMAIN_WHITELIST: 逗号分隔的用户域名白名单
+        CAPTURE_USER_DOMAIN_BLACKLIST: 逗号分隔的用户域名黑名单
     """
     storage_path = os.environ.get("CAPTURE_STORAGE_PATH", "./output/captures")
 
-    domains_str = os.environ.get("CAPTURE_FILTER_DOMAINS", "")
-    paths_str = os.environ.get("CAPTURE_FILTER_PATHS", "")
-    content_types_str = os.environ.get("CAPTURE_FILTER_CONTENT_TYPES", "")
+    # 用户自定义域名白名单/黑名单
+    user_whitelist_str = os.environ.get("CAPTURE_USER_DOMAIN_WHITELIST", "")
+    user_blacklist_str = os.environ.get("CAPTURE_USER_DOMAIN_BLACKLIST", "")
 
-    filter_rules = FilterRules(
-        domains=[d.strip() for d in domains_str.split(",") if d.strip()],
-        paths=[p.strip() for p in paths_str.split(",") if p.strip()],
-        content_types=[ct.strip() for ct in content_types_str.split(",") if ct.strip()],
+    user_domain_whitelist = (
+        [d.strip() for d in user_whitelist_str.split(",") if d.strip()]
+        if user_whitelist_str else None
+    )
+    user_domain_blacklist = (
+        [d.strip() for d in user_blacklist_str.split(",") if d.strip()]
+        if user_blacklist_str else None
     )
 
-    addon = CaptureAddon(storage_path=storage_path, filter_rules=filter_rules)
+    filter_rules = FilterRules(
+        user_domain_whitelist=user_domain_whitelist,
+        user_domain_blacklist=user_domain_blacklist,
+    )
 
-    step_id = os.environ.get("CAPTURE_STEP_ID")
-    if step_id:
-        addon.set_step_id(step_id)
-
-    return addon
+    return CaptureAddon(storage_path=storage_path, filter_rules=filter_rules)
 
 
 # mitmdump 加载入口点

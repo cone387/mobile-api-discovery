@@ -1,23 +1,26 @@
 """API Analyzer 模块测试
 
 测试覆盖：
-- 参数提取（URL query、headers、body、cookies）
-- 参数分类规则
-- 可复现性判定
-- 接口用途检测
-- 完整分析流程
+- classify_api_type: 接口类型识别（LIST/PAGINATION/DETAIL/MEDIA/CONFIG/AUX）
+- classify_parameters: 参数分类（static/session/dynamic）
+- detect_data_links: 数据链路检测
+- analyze_all: 综合分析（目标匹配、报告生成）
 """
 
+import json
 import pytest
 from datetime import datetime
 
-from src.api_analyzer import (
-    APIAnalyzer,
-    DefaultLLMClient,
-    RequestContext,
-    STANDARD_HEADERS,
+from src.api_analyzer import APIAnalyzer
+from src.models import (
+    APIAnalysisResult,
+    APIType,
+    AnalysisReport,
+    CapturedRequest,
+    CaptureTarget,
+    DataLink,
+    ParameterInfo,
 )
-from src.models import CapturedRequest, ParameterInfo
 
 
 # === Fixtures ===
@@ -25,570 +28,738 @@ from src.models import CapturedRequest, ParameterInfo
 
 @pytest.fixture
 def analyzer():
-    """创建默认 APIAnalyzer 实例"""
+    """创建 APIAnalyzer 实例"""
     return APIAnalyzer()
 
 
-@pytest.fixture
-def basic_request():
-    """创建基本的 CapturedRequest"""
+def make_request(
+    url: str = "https://api.example.com/v1/data",
+    method: str = "GET",
+    headers: dict = None,
+    body: str = None,
+    response_body: str = None,
+    response_status: int = 200,
+    request_id: str = "req-001",
+) -> CapturedRequest:
+    """辅助函数：创建 CapturedRequest"""
     return CapturedRequest(
-        id="req-001",
+        id=request_id,
         timestamp=datetime(2024, 1, 1, 12, 0, 0),
-        operation_step_id="step-001",
-        method="GET",
-        url="https://api.example.com/v1/feed?page=1&app_version=2.0&token=abc123",
-        headers={
-            "Host": "api.example.com",
-            "Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9",
-            "X-Custom-Header": "custom_value",
-            "User-Agent": "MyApp/2.0",
-        },
-        body=None,
-        response_status=200,
+        method=method,
+        url=url,
+        headers=headers or {},
+        body=body,
+        response_status=response_status,
         response_headers={"Content-Type": "application/json"},
-        response_body=b'{"data": []}',
+        response_body=response_body,
         is_decrypted=True,
     )
 
 
-@pytest.fixture
-def post_request_json():
-    """创建带 JSON body 的 POST 请求"""
-    import json
-
-    body = json.dumps({"user_id": "12345", "content": "hello", "sign": "abc123def456"})
-    return CapturedRequest(
-        id="req-002",
-        timestamp=datetime(2024, 1, 1, 12, 1, 0),
-        operation_step_id="step-002",
-        method="POST",
-        url="https://api.example.com/v1/comment/create",
-        headers={
-            "Host": "api.example.com",
-            "Content-Type": "application/json",
-            "Authorization": "Bearer token123",
-        },
-        body=body.encode("utf-8"),
-        response_status=200,
-        response_headers={"Content-Type": "application/json"},
-        response_body=b'{"success": true}',
-        is_decrypted=True,
-    )
+# === 接口类型识别测试 ===
 
 
-@pytest.fixture
-def request_with_cookies():
-    """创建带 Cookie 的请求"""
-    return CapturedRequest(
-        id="req-003",
-        timestamp=datetime(2024, 1, 1, 12, 2, 0),
-        operation_step_id="step-003",
-        method="GET",
-        url="https://api.example.com/v1/user/profile",
-        headers={
-            "Host": "api.example.com",
-            "Cookie": "session_id=sess123; user_pref=dark; tracking_id=xyz789",
-        },
-        body=None,
-        response_status=200,
-        response_headers={},
-        response_body=b'{"name": "test"}',
-        is_decrypted=True,
-    )
+class TestClassifyAPIType:
+    """测试 classify_api_type 方法"""
 
+    def test_list_type_basic(self, analyzer):
+        """LIST: 响应含数组，元素含 id + 名称字段"""
+        response = json.dumps({
+            "data": [
+                {"id": 1, "name": "Item 1", "price": 10},
+                {"id": 2, "name": "Item 2", "price": 20},
+            ]
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.LIST
 
-@pytest.fixture
-def form_data_request():
-    """创建带 form data body 的请求"""
-    return CapturedRequest(
-        id="req-004",
-        timestamp=datetime(2024, 1, 1, 12, 3, 0),
-        operation_step_id="step-004",
-        method="POST",
-        url="https://api.example.com/v1/search",
-        headers={
-            "Host": "api.example.com",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body=b"keyword=python&page=1&timestamp=1704067200",
-        response_status=200,
-        response_headers={},
-        response_body=b'{"results": []}',
-        is_decrypted=True,
-    )
+    def test_list_type_with_title_field(self, analyzer):
+        """LIST: 元素含 id + title 字段"""
+        response = json.dumps({
+            "items": [
+                {"id": "abc", "title": "Article 1", "author": "John"},
+                {"id": "def", "title": "Article 2", "author": "Jane"},
+            ]
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.LIST
 
+    def test_list_type_top_level_array(self, analyzer):
+        """LIST: 顶层就是数组"""
+        response = json.dumps([
+            {"id": 1, "name": "Item 1"},
+            {"id": 2, "name": "Item 2"},
+        ])
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.LIST
 
-# === 4.1 参数提取测试 ===
+    def test_not_list_without_id(self, analyzer):
+        """非 LIST: 数组元素无 id 字段"""
+        response = json.dumps({
+            "data": [
+                {"value": 1, "label": "Option 1"},
+                {"value": 2, "label": "Option 2"},
+            ]
+        })
+        req = make_request(response_body=response)
+        # 没有 id 字段，不应该是 LIST
+        result = analyzer.classify_api_type(req)
+        assert result != APIType.LIST
 
+    def test_not_list_without_name_field(self, analyzer):
+        """非 LIST: 数组元素有 id 但无名称类字段"""
+        response = json.dumps({
+            "data": [
+                {"id": 1, "count": 10, "status": "active"},
+                {"id": 2, "count": 20, "status": "inactive"},
+            ]
+        })
+        req = make_request(response_body=response)
+        result = analyzer.classify_api_type(req)
+        assert result != APIType.LIST
 
-class TestParameterExtraction:
-    """测试参数提取逻辑"""
-
-    def test_extract_query_params(self, analyzer, basic_request):
-        """从 URL query string 提取参数"""
-        params = analyzer.extract_parameters(basic_request)
-        query_params = [(n, v, s) for n, v, s in params if s == "query"]
-
-        assert ("page", "1", "query") in query_params
-        assert ("app_version", "2.0", "query") in query_params
-        assert ("token", "abc123", "query") in query_params
-
-    def test_extract_header_params(self, analyzer, basic_request):
-        """从 headers 提取非标准头部"""
-        params = analyzer.extract_parameters(basic_request)
-        header_params = [(n, v, s) for n, v, s in params if s == "header"]
-
-        # Authorization 和 X-Custom-Header 应被提取
-        header_names = [n for n, v, s in header_params]
-        assert "Authorization" in header_names
-        assert "X-Custom-Header" in header_names
-
-        # 标准头部不应被提取
-        assert "Host" not in header_names
-        assert "User-Agent" not in header_names
-
-    def test_extract_json_body_params(self, analyzer, post_request_json):
-        """从 JSON body 提取参数"""
-        params = analyzer.extract_parameters(post_request_json)
-        body_params = [(n, v, s) for n, v, s in params if s == "body"]
-
-        body_names = [n for n, v, s in body_params]
-        assert "user_id" in body_names
-        assert "content" in body_names
-        assert "sign" in body_names
-
-    def test_extract_form_body_params(self, analyzer, form_data_request):
-        """从 form data body 提取参数"""
-        params = analyzer.extract_parameters(form_data_request)
-        body_params = [(n, v, s) for n, v, s in params if s == "body"]
-
-        assert ("keyword", "python", "body") in body_params
-        assert ("page", "1", "body") in body_params
-        assert ("timestamp", "1704067200", "body") in body_params
-
-    def test_extract_cookie_params(self, analyzer, request_with_cookies):
-        """从 Cookie 头部提取参数"""
-        params = analyzer.extract_parameters(request_with_cookies)
-        cookie_params = [(n, v, s) for n, v, s in params if s == "cookie"]
-
-        assert ("session_id", "sess123", "cookie") in cookie_params
-        assert ("user_pref", "dark", "cookie") in cookie_params
-        assert ("tracking_id", "xyz789", "cookie") in cookie_params
-
-    def test_extract_no_body(self, analyzer, basic_request):
-        """body 为 None 时不提取 body 参数"""
-        params = analyzer.extract_parameters(basic_request)
-        body_params = [(n, v, s) for n, v, s in params if s == "body"]
-        assert body_params == []
-
-    def test_extract_empty_query(self, analyzer):
-        """URL 无 query string 时返回空"""
-        request = CapturedRequest(
-            id="req-empty",
-            timestamp=datetime(2024, 1, 1),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/v1/feed",
-            headers={},
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=None,
-            is_decrypted=True,
+    def test_pagination_type(self, analyzer):
+        """PAGINATION: 请求含分页参数 + 响应含分页标识"""
+        response = json.dumps({
+            "data": [{"id": 1, "name": "Item"}],
+            "hasMore": True,
+            "total": 100,
+        })
+        req = make_request(
+            url="https://api.example.com/v1/list?page=1&pageSize=20",
+            response_body=response,
         )
-        params = analyzer.extract_parameters(request)
-        assert params == []
+        assert analyzer.classify_api_type(req) == APIType.PAGINATION
 
-
-# === 4.2 参数分类测试 ===
-
-
-class TestParameterClassification:
-    """测试参数分类规则"""
-
-    @pytest.fixture
-    def context(self):
-        return RequestContext(
-            url="https://api.example.com/v1/feed",
-            method="GET",
+    def test_pagination_with_offset(self, analyzer):
+        """PAGINATION: offset 参数 + total 响应"""
+        response = json.dumps({
+            "items": [{"id": 1, "name": "Item"}],
+            "total": 50,
+        })
+        req = make_request(
+            url="https://api.example.com/v1/items?offset=0&limit=10",
+            response_body=response,
         )
+        assert analyzer.classify_api_type(req) == APIType.PAGINATION
 
-    def test_classify_static_params(self, analyzer, context):
+    def test_pagination_with_cursor(self, analyzer):
+        """PAGINATION: cursor 参数 + nextCursor 响应"""
+        response = json.dumps({
+            "data": [{"id": 1, "name": "Item"}],
+            "nextCursor": "abc123",
+        })
+        req = make_request(
+            url="https://api.example.com/v1/feed?cursor=xyz",
+            response_body=response,
+        )
+        assert analyzer.classify_api_type(req) == APIType.PAGINATION
+
+    def test_detail_type(self, analyzer):
+        """DETAIL: 请求含 id 参数 + 响应字段多"""
+        # 先设置列表元素字段数参考
+        analyzer._list_element_field_counts = [3]
+
+        response = json.dumps({
+            "id": 123,
+            "name": "Product",
+            "description": "A great product",
+            "price": 99.9,
+            "category": "electronics",
+            "brand": "BrandX",
+            "stock": 50,
+        })
+        req = make_request(
+            url="https://api.example.com/v1/product?id=123",
+            response_body=response,
+        )
+        assert analyzer.classify_api_type(req) == APIType.DETAIL
+
+    def test_detail_type_with_item_id(self, analyzer):
+        """DETAIL: 请求含 itemId 参数"""
+        analyzer._list_element_field_counts = [3]
+
+        response = json.dumps({
+            "id": 456,
+            "title": "Article",
+            "content": "Long content here",
+            "author": "John",
+            "created_at": "2024-01-01",
+            "tags": ["tech", "ai"],
+        })
+        req = make_request(
+            url="https://api.example.com/v1/article?itemId=456",
+            response_body=response,
+        )
+        assert analyzer.classify_api_type(req) == APIType.DETAIL
+
+    def test_media_type_mp4(self, analyzer):
+        """MEDIA: 响应含 .mp4 URL"""
+        response = json.dumps({
+            "url": "https://cdn.example.com/video/123.mp4",
+            "quality": "1080p",
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.MEDIA
+
+    def test_media_type_m3u8(self, analyzer):
+        """MEDIA: 响应含 .m3u8 URL"""
+        response = json.dumps({
+            "playUrl": "https://cdn.example.com/stream/live.m3u8",
+            "title": "Live Stream",
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.MEDIA
+
+    def test_media_type_mp3(self, analyzer):
+        """MEDIA: 响应含 .mp3 URL"""
+        response = json.dumps({
+            "audioUrl": "https://cdn.example.com/audio/song.mp3",
+            "duration": 240,
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.MEDIA
+
+    def test_media_type_path_pattern(self, analyzer):
+        """MEDIA: 响应含 /video/ 路径"""
+        response = json.dumps({
+            "src": "https://cdn.example.com/video/play/123",
+            "type": "hls",
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.MEDIA
+
+    def test_config_type(self, analyzer):
+        """CONFIG: 响应含 config/settings 字段"""
+        response = json.dumps({
+            "config": {"theme": "dark", "language": "zh"},
+            "version": "2.0.1",
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.CONFIG
+
+    def test_config_type_settings(self, analyzer):
+        """CONFIG: 响应含 settings 字段"""
+        response = json.dumps({
+            "settings": {"notifications": True, "autoPlay": False},
+        })
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.CONFIG
+
+    def test_aux_type_simple_response(self, analyzer):
+        """AUX: 简单响应"""
+        response = json.dumps({"success": True, "code": 0})
+        req = make_request(response_body=response)
+        assert analyzer.classify_api_type(req) == APIType.AUX
+
+    def test_aux_type_null_response(self, analyzer):
+        """AUX: 空响应"""
+        req = make_request(response_body=None)
+        assert analyzer.classify_api_type(req) == APIType.AUX
+
+    def test_aux_type_invalid_json(self, analyzer):
+        """AUX: 无效 JSON 响应"""
+        req = make_request(response_body="not json")
+        assert analyzer.classify_api_type(req) == APIType.AUX
+
+
+# === 参数分类测试 ===
+
+
+class TestClassifyParameters:
+    """测试 classify_parameters 方法"""
+
+    def test_static_params(self, analyzer):
         """静态参数分类"""
-        static_names = [
-            "app_version",
-            "platform",
-            "os_version",
-            "device_model",
-            "channel",
-            "language",
-            "locale",
-        ]
-        for name in static_names:
-            result = analyzer.classify_parameter(name, "some_value", context)
-            assert result.category == "static", f"Expected '{name}' to be static"
-
-    def test_classify_session_params_by_name(self, analyzer, context):
-        """会话参数 - 名称匹配"""
-        session_names = [
-            "Authorization",
-            "access_token",
-            "session_id",
-            "auth_key",
-            "user_token",
-            "cookie_value",
-        ]
-        for name in session_names:
-            result = analyzer.classify_parameter(name, "some_value", context)
-            assert result.category == "session", f"Expected '{name}' to be session"
-
-    def test_classify_session_params_by_bearer_value(self, analyzer, context):
-        """会话参数 - Bearer token 值"""
-        result = analyzer.classify_parameter(
-            "X-Custom", "Bearer eyJhbGciOiJIUzI1NiJ9", context
+        req = make_request(
+            url="https://api.example.com/v1/data?version=2.0&platform=android&channel=official"
         )
-        assert result.category == "session"
+        params = analyzer.classify_parameters(req)
 
-    def test_classify_dynamic_params_by_name(self, analyzer, context):
+        param_map = {p.name: p for p in params}
+        assert param_map["version"].category == "static"
+        assert param_map["platform"].category == "static"
+        assert param_map["channel"].category == "static"
+
+    def test_session_params(self, analyzer):
+        """会话参数分类"""
+        req = make_request(
+            url="https://api.example.com/v1/data?token=abc123&userId=12345"
+        )
+        params = analyzer.classify_parameters(req)
+
+        param_map = {p.name: p for p in params}
+        assert param_map["token"].category == "session"
+        assert param_map["userId"].category == "session"
+
+    def test_session_params_from_header(self, analyzer):
+        """会话参数 - 来自 header"""
+        req = make_request(
+            url="https://api.example.com/v1/data",
+            headers={"Authorization": "Bearer token123"},
+        )
+        params = analyzer.classify_parameters(req)
+
+        param_map = {p.name: p for p in params}
+        assert param_map["Authorization"].category == "session"
+        assert param_map["Authorization"].source == "header"
+
+    def test_dynamic_params_by_name(self, analyzer):
         """动态参数 - 名称匹配"""
-        dynamic_names = [
-            "sign",
-            "signature",
-            "nonce",
-            "timestamp",
-            "ts",
-            "encrypted_data",
-            "hash_value",
-            "checksum",
-        ]
-        for name in dynamic_names:
-            result = analyzer.classify_parameter(name, "some_value", context)
-            assert result.category == "dynamic", f"Expected '{name}' to be dynamic"
+        req = make_request(
+            url="https://api.example.com/v1/data?sign=abc&nonce=xyz&timestamp=1704067200"
+        )
+        params = analyzer.classify_parameters(req)
 
-    def test_classify_dynamic_params_by_value_md5(self, analyzer, context):
+        param_map = {p.name: p for p in params}
+        assert param_map["sign"].category == "dynamic"
+        assert param_map["nonce"].category == "dynamic"
+        assert param_map["timestamp"].category == "dynamic"
+
+    def test_dynamic_params_by_value_md5(self, analyzer):
         """动态参数 - MD5 哈希值"""
-        result = analyzer.classify_parameter(
-            "data", "d41d8cd98f00b204e9800998ecf8427e", context
+        req = make_request(
+            url="https://api.example.com/v1/data?data=d41d8cd98f00b204e9800998ecf8427e"
         )
-        assert result.category == "dynamic"
+        params = analyzer.classify_parameters(req)
 
-    def test_classify_dynamic_params_by_value_sha256(self, analyzer, context):
-        """动态参数 - SHA256 哈希值"""
-        result = analyzer.classify_parameter(
-            "data",
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            context,
+        param_map = {p.name: p for p in params}
+        assert param_map["data"].category == "dynamic"
+
+    def test_body_params_json(self, analyzer):
+        """从 JSON body 提取参数"""
+        body = json.dumps({"userId": "12345", "sign": "abc123"})
+        req = make_request(
+            url="https://api.example.com/v1/data",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body=body,
         )
-        assert result.category == "dynamic"
+        params = analyzer.classify_parameters(req)
 
-    def test_classify_unknown_params(self, analyzer, context):
-        """未知参数分类"""
-        result = analyzer.classify_parameter("custom_field", "hello world", context)
-        assert result.category == "unknown"
+        param_map = {p.name: p for p in params}
+        assert "userId" in param_map
+        assert param_map["userId"].category == "session"
+        assert param_map["userId"].source == "body"
+        assert param_map["sign"].category == "dynamic"
 
-    def test_classification_priority_static_over_session(self, analyzer, context):
-        """分类优先级：静态 > 会话（device_id 虽含 id 但在静态列表中）"""
-        # device_id is in STATIC_PARAM_NAMES
-        result = analyzer.classify_parameter("device_id", "abc123", context)
-        assert result.category == "static"
-
-
-# === 4.3 可复现性判定测试 ===
-
-
-class TestReproducibilityDetermination:
-    """测试可复现性判定逻辑"""
-
-    def test_reproducible_all_static(self, analyzer):
-        """全部静态参数 -> reproducible"""
-        params = [
-            ParameterInfo(
-                name="app_version",
-                value_sample="2.0",
-                category="static",
-                source="query",
-                reasoning="",
-            ),
-            ParameterInfo(
-                name="platform",
-                value_sample="android",
-                category="static",
-                source="query",
-                reasoning="",
-            ),
-        ]
-        result, reason = analyzer.determine_reproducibility(params)
-        assert result == "reproducible"
-        assert "静态" in reason or "复现" in reason
-
-    def test_reproducible_static_and_session(self, analyzer):
-        """静态 + 会话参数 -> reproducible"""
-        params = [
-            ParameterInfo(
-                name="app_version",
-                value_sample="2.0",
-                category="static",
-                source="query",
-                reasoning="",
-            ),
-            ParameterInfo(
-                name="token",
-                value_sample="abc",
-                category="session",
-                source="header",
-                reasoning="",
-            ),
-        ]
-        result, reason = analyzer.determine_reproducibility(params)
-        assert result == "reproducible"
-
-    def test_complex_with_dynamic(self, analyzer):
-        """包含动态参数 -> complex"""
-        params = [
-            ParameterInfo(
-                name="app_version",
-                value_sample="2.0",
-                category="static",
-                source="query",
-                reasoning="",
-            ),
-            ParameterInfo(
-                name="sign",
-                value_sample="abc123",
-                category="dynamic",
-                source="query",
-                reasoning="",
-            ),
-        ]
-        result, reason = analyzer.determine_reproducibility(params)
-        assert result == "complex"
-        assert "sign" in reason
-
-    def test_unknown_with_only_unknown(self, analyzer):
-        """仅有未知参数 -> unknown"""
-        params = [
-            ParameterInfo(
-                name="app_version",
-                value_sample="2.0",
-                category="static",
-                source="query",
-                reasoning="",
-            ),
-            ParameterInfo(
-                name="custom_field",
-                value_sample="value",
-                category="unknown",
-                source="query",
-                reasoning="",
-            ),
-        ]
-        result, reason = analyzer.determine_reproducibility(params)
-        assert result == "unknown"
-        assert "custom_field" in reason
-
-    def test_reproducible_empty_params(self, analyzer):
-        """空参数列表 -> reproducible"""
-        result, reason = analyzer.determine_reproducibility([])
-        assert result == "reproducible"
-
-    def test_complex_takes_priority_over_unknown(self, analyzer):
-        """动态参数优先于未知参数"""
-        params = [
-            ParameterInfo(
-                name="sign",
-                value_sample="abc",
-                category="dynamic",
-                source="query",
-                reasoning="",
-            ),
-            ParameterInfo(
-                name="custom",
-                value_sample="val",
-                category="unknown",
-                source="query",
-                reasoning="",
-            ),
-        ]
-        result, reason = analyzer.determine_reproducibility(params)
-        assert result == "complex"
-
-
-# === 4.4 接口用途语义分析测试 ===
-
-
-class TestPurposeDetection:
-    """测试接口用途检测"""
-
-    def test_detect_feed_purpose(self, analyzer):
-        """检测 feed 类接口"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/feed/list")
-        assert purpose == "feed"
-
-    def test_detect_user_purpose(self, analyzer):
-        """检测 user 类接口"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/user/profile")
-        assert purpose == "user"
-
-    def test_detect_comment_purpose(self, analyzer):
-        """检测 comment 类接口"""
-        purpose = analyzer._detect_purpose(
-            "https://api.example.com/v1/comment/create"
+    def test_body_params_form(self, analyzer):
+        """从 form data body 提取参数"""
+        req = make_request(
+            url="https://api.example.com/v1/data",
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body="platform=ios&token=abc123",
         )
-        assert purpose == "comment"
+        params = analyzer.classify_parameters(req)
 
-    def test_detect_search_purpose(self, analyzer):
-        """检测 search 类接口"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/search")
-        assert purpose == "search"
+        param_map = {p.name: p for p in params}
+        assert param_map["platform"].category == "static"
+        assert param_map["token"].category == "session"
 
-    def test_detect_auth_purpose(self, analyzer):
-        """检测 auth 类接口"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/login")
-        assert purpose == "auth"
-
-    def test_detect_unknown_purpose(self, analyzer):
-        """无法识别的接口用途"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/xyz/abc")
-        assert purpose == "unknown"
-
-    def test_detect_payment_purpose(self, analyzer):
-        """检测 payment 类接口"""
-        purpose = analyzer._detect_purpose("https://api.example.com/v1/payment/create")
-        assert purpose == "payment"
-
-
-# === 完整分析流程测试 ===
-
-
-class TestAnalyzeSingle:
-    """测试完整的单请求分析流程"""
-
-    @pytest.mark.asyncio
-    async def test_analyze_simple_get(self, analyzer):
-        """分析简单 GET 请求（仅静态参数）"""
-        request = CapturedRequest(
-            id="req-simple",
-            timestamp=datetime(2024, 1, 1),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/v1/feed?app_version=2.0&platform=android",
-            headers={"Host": "api.example.com"},
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=b'{"data": []}',
-            is_decrypted=True,
+    def test_cookie_params(self, analyzer):
+        """从 Cookie 提取参数"""
+        req = make_request(
+            url="https://api.example.com/v1/data",
+            headers={"Cookie": "session_id=sess123; uid=user456"},
         )
+        params = analyzer.classify_parameters(req)
 
-        result = await analyzer.analyze_single(request)
+        param_map = {p.name: p for p in params}
+        assert "session_id" in param_map
+        assert param_map["session_id"].category == "session"
+        assert param_map["session_id"].source == "cookie"
+        assert param_map["uid"].category == "session"
 
-        assert result.request_id == "req-simple"
-        assert result.endpoint == "/v1/feed"
-        assert result.purpose == "feed"
-        assert result.reproducibility == "reproducible"
-        assert 0.0 <= result.confidence <= 1.0
-
-    @pytest.mark.asyncio
-    async def test_analyze_complex_request(self, analyzer):
-        """分析包含动态参数的复杂请求"""
-        request = CapturedRequest(
-            id="req-complex",
-            timestamp=datetime(2024, 1, 1),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/v1/feed?sign=abc123&nonce=xyz&app_version=2.0",
-            headers={"Host": "api.example.com"},
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=b'{"data": []}',
-            is_decrypted=True,
+    def test_all_params_have_valid_category(self, analyzer):
+        """所有参数分类结果必须是 static/session/dynamic 之一"""
+        req = make_request(
+            url="https://api.example.com/v1/data?version=1&token=abc&sign=xyz&custom=hello"
         )
+        params = analyzer.classify_parameters(req)
 
-        result = await analyzer.analyze_single(request)
-
-        assert result.reproducibility == "complex"
-        dynamic_names = [p.name for p in result.parameters if p.category == "dynamic"]
-        assert "sign" in dynamic_names
-        assert "nonce" in dynamic_names
-
-    @pytest.mark.asyncio
-    async def test_analyze_cookie_params_classified_as_session(self, analyzer):
-        """Cookie 来源的未知参数应归类为 session"""
-        request = CapturedRequest(
-            id="req-cookie",
-            timestamp=datetime(2024, 1, 1),
-            operation_step_id="step-001",
-            method="GET",
-            url="https://api.example.com/v1/user/profile",
-            headers={
-                "Host": "api.example.com",
-                "Cookie": "my_custom_cookie=value123",
-            },
-            body=None,
-            response_status=200,
-            response_headers={},
-            response_body=b'{}',
-            is_decrypted=True,
-        )
-
-        result = await analyzer.analyze_single(request)
-
-        cookie_params = [p for p in result.parameters if p.source == "cookie"]
-        assert len(cookie_params) > 0
-        # Cookie 来源的未知参数应被归类为 session
-        for p in cookie_params:
-            assert p.category == "session"
-
-    @pytest.mark.asyncio
-    async def test_analyze_batch(self, analyzer):
-        """批量分析多个请求"""
-        requests = [
-            CapturedRequest(
-                id=f"req-{i}",
-                timestamp=datetime(2024, 1, 1),
-                operation_step_id="step-001",
-                method="GET",
-                url=f"https://api.example.com/v1/feed?page={i}",
-                headers={"Host": "api.example.com"},
-                body=None,
-                response_status=200,
-                response_headers={},
-                response_body=b'{}',
-                is_decrypted=True,
+        for p in params:
+            assert p.category in ("static", "session", "dynamic"), (
+                f"Parameter '{p.name}' has invalid category '{p.category}'"
             )
-            for i in range(3)
+
+    def test_param_source_tracking(self, analyzer):
+        """参数来源正确标记"""
+        req = make_request(
+            url="https://api.example.com/v1/data?version=1",
+            headers={"Authorization": "Bearer token"},
+            body=json.dumps({"sign": "abc"}),
+        )
+        params = analyzer.classify_parameters(req)
+
+        param_map = {p.name: p for p in params}
+        assert param_map["version"].source == "query"
+        assert param_map["Authorization"].source == "header"
+        assert param_map["sign"].source == "body"
+
+
+# === 数据链路检测测试 ===
+
+
+class TestDetectDataLinks:
+    """测试 detect_data_links 方法"""
+
+    def test_list_to_detail_link(self, analyzer):
+        """检测 list → detail 链路"""
+        # 模拟 LIST 接口的 ID 值缓存
+        analyzer._list_id_values = {
+            "/v1/books": {"101", "102", "103"},
+        }
+        analyzer._detail_id_values = {}
+
+        results = [
+            APIAnalysisResult(
+                request_id="req-1",
+                endpoint="/v1/books",
+                api_type=APIType.LIST,
+                parameters=[],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+            APIAnalysisResult(
+                request_id="req-2",
+                endpoint="/v1/book/detail",
+                api_type=APIType.DETAIL,
+                parameters=[
+                    ParameterInfo(name="bookId", value_sample="101", category="static", source="query"),
+                ],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
         ]
 
-        results = await analyzer.analyze_batch(requests)
+        links = analyzer.detect_data_links(results)
 
-        assert len(results) == 3
-        for i, result in enumerate(results):
-            assert result.request_id == f"req-{i}"
+        assert len(links) == 1
+        assert links[0].source_endpoint == "/v1/books"
+        assert links[0].target_endpoint == "/v1/book/detail"
+        assert links[0].link_field == "bookId"
+        assert links[0].link_type == "list_to_detail"
+
+    def test_list_to_media_link(self, analyzer):
+        """检测 list → media 链路"""
+        analyzer._list_id_values = {
+            "/v1/videos": {"v001", "v002"},
+        }
+        analyzer._detail_id_values = {}
+
+        results = [
+            APIAnalysisResult(
+                request_id="req-1",
+                endpoint="/v1/videos",
+                api_type=APIType.LIST,
+                parameters=[],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+            APIAnalysisResult(
+                request_id="req-2",
+                endpoint="/v1/video/play",
+                api_type=APIType.MEDIA,
+                parameters=[
+                    ParameterInfo(name="videoId", value_sample="v001", category="static", source="query"),
+                ],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+        ]
+
+        links = analyzer.detect_data_links(results)
+
+        assert len(links) == 1
+        assert links[0].link_type == "list_to_media"
+
+    def test_no_link_when_ids_dont_match(self, analyzer):
+        """ID 不匹配时不建立链路"""
+        analyzer._list_id_values = {
+            "/v1/books": {"101", "102"},
+        }
+        analyzer._detail_id_values = {}
+
+        results = [
+            APIAnalysisResult(
+                request_id="req-1",
+                endpoint="/v1/books",
+                api_type=APIType.LIST,
+                parameters=[],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+            APIAnalysisResult(
+                request_id="req-2",
+                endpoint="/v1/book/detail",
+                api_type=APIType.DETAIL,
+                parameters=[
+                    ParameterInfo(name="bookId", value_sample="999", category="static", source="query"),
+                ],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+        ]
+
+        links = analyzer.detect_data_links(results)
+        assert len(links) == 0
+
+    def test_detail_to_media_link(self, analyzer):
+        """检测 detail → media 链路"""
+        analyzer._list_id_values = {}
+        analyzer._detail_id_values = {
+            "/v1/book/detail": {"chapter-001"},
+        }
+
+        results = [
+            APIAnalysisResult(
+                request_id="req-1",
+                endpoint="/v1/book/detail",
+                api_type=APIType.DETAIL,
+                parameters=[],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+            APIAnalysisResult(
+                request_id="req-2",
+                endpoint="/v1/audio/play",
+                api_type=APIType.MEDIA,
+                parameters=[
+                    ParameterInfo(name="chapterId", value_sample="chapter-001", category="static", source="query"),
+                ],
+                has_signature=False,
+                signature_fields=[],
+                matches_target=False,
+                call_count=1,
+            ),
+        ]
+
+        links = analyzer.detect_data_links(results)
+
+        assert len(links) == 1
+        assert links[0].link_type == "detail_to_media"
 
 
-# === DefaultLLMClient 测试 ===
+# === 综合分析测试 ===
 
 
-class TestDefaultLLMClient:
-    """测试默认 LLM 客户端"""
+class TestAnalyzeAll:
+    """测试 analyze_all 方法"""
 
-    def test_detect_purpose_patterns(self):
-        """测试各种 URL 模式的用途检测"""
-        client = DefaultLLMClient()
+    def test_basic_analysis(self, analyzer):
+        """基本综合分析"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/books?page=1",
+                response_body=json.dumps({
+                    "data": [
+                        {"id": 1, "name": "Book 1"},
+                        {"id": 2, "name": "Book 2"},
+                    ],
+                    "hasMore": True,
+                }),
+            ),
+            make_request(
+                request_id="req-2",
+                url="https://api.example.com/v1/config",
+                response_body=json.dumps({
+                    "config": {"theme": "dark"},
+                    "version": "1.0",
+                }),
+            ),
+        ]
+        target = CaptureTarget(
+            app_name="TestApp",
+            target_data="books list",
+            operation_pages="home page",
+        )
 
-        assert client.detect_purpose("https://api.com/feed") == "feed"
-        assert client.detect_purpose("https://api.com/timeline") == "feed"
-        assert client.detect_purpose("https://api.com/user/info") == "user"
-        assert client.detect_purpose("https://api.com/profile") == "user"
-        assert client.detect_purpose("https://api.com/search/query") == "search"
-        assert client.detect_purpose("https://api.com/comment/list") == "comment"
-        assert client.detect_purpose("https://api.com/unknown/path") == "unknown"
+        report = analyzer.analyze_all(requests, target)
 
-    @pytest.mark.asyncio
-    async def test_analyze_returns_string(self):
-        """analyze 方法返回字符串"""
-        client = DefaultLLMClient()
-        result = await client.analyze("test prompt")
-        assert isinstance(result, str)
+        assert isinstance(report, AnalysisReport)
+        assert report.total_captured == 2
+        assert report.total_analyzed == 2
+        assert len(report.results) == 2
+
+    def test_target_matching(self, analyzer):
+        """目标匹配逻辑"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/books?page=1",
+                response_body=json.dumps({
+                    "data": [
+                        {"id": 1, "name": "Book 1"},
+                    ],
+                    "hasMore": True,
+                }),
+            ),
+            make_request(
+                request_id="req-2",
+                url="https://api.example.com/v1/ads/banner",
+                response_body=json.dumps({"banners": []}),
+            ),
+        ]
+        target = CaptureTarget(
+            app_name="TestApp",
+            target_data="books",
+            operation_pages="home",
+        )
+
+        report = analyzer.analyze_all(requests, target)
+
+        # books 接口应该匹配目标
+        books_result = next(r for r in report.results if "/books" in r.endpoint)
+        assert books_result.matches_target is True
+
+    def test_no_target_match(self, analyzer):
+        """未找到匹配目标时 target_matched 为 0"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/ads/banner",
+                response_body=json.dumps({"success": True}),
+            ),
+        ]
+        target = CaptureTarget(
+            app_name="TestApp",
+            target_data="videos streaming",
+            operation_pages="play page",
+        )
+
+        report = analyzer.analyze_all(requests, target)
+        assert report.target_matched == 0
+
+    def test_signature_detection(self, analyzer):
+        """签名检测"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/data?sign=abc123&nonce=xyz&version=2.0",
+                response_body=json.dumps({"data": "ok"}),
+            ),
+        ]
+        target = CaptureTarget(app_name="App", target_data="data", operation_pages="home")
+
+        report = analyzer.analyze_all(requests, target)
+
+        result = report.results[0]
+        assert result.has_signature is True
+        assert "sign" in result.signature_fields
+        assert "nonce" in result.signature_fields
+
+    def test_call_count(self, analyzer):
+        """调用次数统计"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/data?page=1",
+                response_body=json.dumps({"data": "ok"}),
+            ),
+            make_request(
+                request_id="req-2",
+                url="https://api.example.com/v1/data?page=2",
+                response_body=json.dumps({"data": "ok"}),
+            ),
+            make_request(
+                request_id="req-3",
+                url="https://api.example.com/v1/data?page=3",
+                response_body=json.dumps({"data": "ok"}),
+            ),
+        ]
+        target = CaptureTarget(app_name="App", target_data="data", operation_pages="home")
+
+        report = analyzer.analyze_all(requests, target)
+
+        # 同一 endpoint 只分析一次，但 call_count 应为 3
+        assert len(report.results) == 1
+        assert report.results[0].call_count == 3
+
+    def test_data_link_detection_in_analyze_all(self, analyzer):
+        """analyze_all 中的数据链路检测"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/books?page=1",
+                response_body=json.dumps({
+                    "data": [
+                        {"id": "book-001", "name": "Book 1"},
+                        {"id": "book-002", "name": "Book 2"},
+                    ],
+                    "hasMore": True,
+                }),
+            ),
+            make_request(
+                request_id="req-2",
+                url="https://api.example.com/v1/book/detail?id=book-001",
+                response_body=json.dumps({
+                    "id": "book-001",
+                    "name": "Book 1",
+                    "author": "Author",
+                    "description": "A great book",
+                    "chapters": 10,
+                    "rating": 4.5,
+                }),
+            ),
+        ]
+        target = CaptureTarget(app_name="App", target_data="books", operation_pages="home")
+
+        report = analyzer.analyze_all(requests, target)
+
+        # 应该检测到 list → detail 链路
+        assert len(report.data_links) >= 1
+        link = report.data_links[0]
+        assert link.source_endpoint == "/v1/books"
+        assert link.target_endpoint == "/v1/book/detail"
+        assert link.link_type == "list_to_detail"
+
+    def test_report_type_counts(self, analyzer):
+        """报告中各类型接口数量之和等于 total_analyzed"""
+        requests = [
+            make_request(
+                request_id="req-1",
+                url="https://api.example.com/v1/items?page=1",
+                response_body=json.dumps({
+                    "data": [{"id": 1, "name": "Item"}],
+                    "total": 10,
+                }),
+            ),
+            make_request(
+                request_id="req-2",
+                url="https://api.example.com/v1/play",
+                response_body=json.dumps({
+                    "url": "https://cdn.example.com/video.mp4",
+                }),
+            ),
+            make_request(
+                request_id="req-3",
+                url="https://api.example.com/v1/status",
+                response_body=json.dumps({"code": 0, "msg": "ok"}),
+            ),
+        ]
+        target = CaptureTarget(app_name="App", target_data="items", operation_pages="home")
+
+        report = analyzer.analyze_all(requests, target)
+
+        # 各类型数量之和应等于 total_analyzed
+        type_counts = {}
+        for r in report.results:
+            type_counts[r.api_type] = type_counts.get(r.api_type, 0) + 1
+
+        assert sum(type_counts.values()) == report.total_analyzed

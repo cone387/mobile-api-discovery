@@ -1,22 +1,71 @@
 """数据模型定义
 
 定义系统中所有核心数据结构，包括：
+- CaptureTarget: 抓取目标
+- FilterRules: 过滤规则
 - CapturedRequest: 捕获的 HTTP 请求
-- OperationStep: 操作步骤
-- OperationSequence: 操作序列
 - ParameterInfo: 参数信息
+- APIType: 接口类型枚举
 - APIAnalysisResult: 接口分析结果
-- GeneratedCode: 生成的代码
-- CrawlConfig: 采集配置
-- CrawlStats: 采集统计
-- CrawlTask: 采集任务
+- DataLink: 数据链路
+- AnalysisReport: 分析报告
+- RequirementStatus, ConnectionResult, CertResult, ProxyResult, ProcessResult: 结果类型
 """
 
 import json
 import base64
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional, List
+
+
+# ============================================================
+# 枚举类型
+# ============================================================
+
+
+class APIType(Enum):
+    """接口类型枚举"""
+
+    LIST = "list"
+    PAGINATION = "pagination"
+    DETAIL = "detail"
+    MEDIA = "media"
+    CONFIG = "config"
+    AUX = "aux"
+
+
+# ============================================================
+# 核心数据模型
+# ============================================================
+
+
+@dataclass
+class CaptureTarget:
+    """抓取目标"""
+
+    app_name: str = ""  # 目标 App 名称
+    target_data: str = ""  # 期望获取的数据描述
+    operation_pages: str = ""  # 需要操作的页面说明
+    filter_domains: Optional[List[str]] = None  # 用户指定的域名白名单
+
+
+@dataclass
+class FilterRules:
+    """过滤规则"""
+
+    content_type_blacklist: List[str] = field(default_factory=lambda: [
+        "image/", "font/", "video/", "audio/", "text/css", "application/javascript",
+    ])
+    domain_blacklist: List[str] = field(default_factory=list)
+    path_blacklist: List[str] = field(default_factory=list)
+    content_type_whitelist: List[str] = field(default_factory=lambda: ["json"])
+    api_path_patterns: List[str] = field(default_factory=lambda: [
+        "/api/", "/v1/", "/v2/", "/v3/", "/portal/", "/gateway/",
+    ])
+    user_domain_whitelist: Optional[List[str]] = None
+    user_domain_blacklist: Optional[List[str]] = None
 
 
 @dataclass
@@ -25,29 +74,27 @@ class CapturedRequest:
 
     id: str
     timestamp: datetime
-    operation_step_id: str
     method: str
     url: str
     headers: dict
-    body: Optional[bytes]
+    body: Optional[str]
     response_status: int
     response_headers: dict
-    response_body: Optional[bytes]
+    response_body: Optional[str]
     is_decrypted: bool
 
     def to_dict(self) -> dict:
-        """序列化为字典，bytes 字段使用 base64 编码"""
+        """序列化为字典"""
         return {
             "id": self.id,
             "timestamp": self.timestamp.isoformat(),
-            "operation_step_id": self.operation_step_id,
             "method": self.method,
             "url": self.url,
             "headers": self.headers,
-            "body": base64.b64encode(self.body).decode("ascii") if self.body is not None else None,
+            "body": self.body,
             "response_status": self.response_status,
             "response_headers": self.response_headers,
-            "response_body": base64.b64encode(self.response_body).decode("ascii") if self.response_body is not None else None,
+            "response_body": self.response_body,
             "is_decrypted": self.is_decrypted,
         }
 
@@ -57,14 +104,13 @@ class CapturedRequest:
         return cls(
             id=data["id"],
             timestamp=datetime.fromisoformat(data["timestamp"]),
-            operation_step_id=data["operation_step_id"],
             method=data["method"],
             url=data["url"],
             headers=data["headers"],
-            body=base64.b64decode(data["body"]) if data.get("body") is not None else None,
+            body=data.get("body"),
             response_status=data["response_status"],
             response_headers=data["response_headers"],
-            response_body=base64.b64decode(data["response_body"]) if data.get("response_body") is not None else None,
+            response_body=data.get("response_body"),
             is_decrypted=data["is_decrypted"],
         )
 
@@ -83,7 +129,6 @@ class CapturedRequest:
         return (
             self.id == other.id
             and self.timestamp == other.timestamp
-            and self.operation_step_id == other.operation_step_id
             and self.method == other.method
             and self.url == other.url
             and self.headers == other.headers
@@ -96,126 +141,13 @@ class CapturedRequest:
 
 
 @dataclass
-class OperationStep:
-    """操作步骤"""
-
-    id: str
-    sequence_id: str
-    action_type: str  # click, swipe, input, navigate, wait
-    target: Optional[str]
-    parameters: dict
-    status: str  # pending, success, failed, skipped
-    error_message: Optional[str]
-
-    def to_dict(self) -> dict:
-        """序列化为字典"""
-        return {
-            "id": self.id,
-            "sequence_id": self.sequence_id,
-            "action_type": self.action_type,
-            "target": self.target,
-            "parameters": self.parameters,
-            "status": self.status,
-            "error_message": self.error_message,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "OperationStep":
-        """从字典反序列化"""
-        return cls(
-            id=data["id"],
-            sequence_id=data["sequence_id"],
-            action_type=data["action_type"],
-            target=data.get("target"),
-            parameters=data["parameters"],
-            status=data["status"],
-            error_message=data.get("error_message"),
-        )
-
-    def to_json(self) -> str:
-        """序列化为 JSON 字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "OperationStep":
-        """从 JSON 字符串反序列化"""
-        return cls.from_dict(json.loads(json_str))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, OperationStep):
-            return NotImplemented
-        return (
-            self.id == other.id
-            and self.sequence_id == other.sequence_id
-            and self.action_type == other.action_type
-            and self.target == other.target
-            and self.parameters == other.parameters
-            and self.status == other.status
-            and self.error_message == other.error_message
-        )
-
-
-@dataclass
-class OperationSequence:
-    """操作序列"""
-
-    id: str
-    app_package: str
-    intent_description: str
-    steps: List[OperationStep]
-    created_at: datetime
-
-    def to_dict(self) -> dict:
-        """序列化为字典，递归序列化嵌套的 OperationStep"""
-        return {
-            "id": self.id,
-            "app_package": self.app_package,
-            "intent_description": self.intent_description,
-            "steps": [step.to_dict() for step in self.steps],
-            "created_at": self.created_at.isoformat(),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "OperationSequence":
-        """从字典反序列化"""
-        return cls(
-            id=data["id"],
-            app_package=data["app_package"],
-            intent_description=data["intent_description"],
-            steps=[OperationStep.from_dict(s) for s in data["steps"]],
-            created_at=datetime.fromisoformat(data["created_at"]),
-        )
-
-    def to_json(self) -> str:
-        """序列化为 JSON 字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "OperationSequence":
-        """从 JSON 字符串反序列化"""
-        return cls.from_dict(json.loads(json_str))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, OperationSequence):
-            return NotImplemented
-        return (
-            self.id == other.id
-            and self.app_package == other.app_package
-            and self.intent_description == other.intent_description
-            and self.steps == other.steps
-            and self.created_at == other.created_at
-        )
-
-
-@dataclass
 class ParameterInfo:
     """参数信息"""
 
     name: str
     value_sample: str
-    category: str  # static, session, dynamic, unknown
+    category: str  # static, session, dynamic
     source: str  # query, header, body, cookie
-    reasoning: str
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -224,7 +156,6 @@ class ParameterInfo:
             "value_sample": self.value_sample,
             "category": self.category,
             "source": self.source,
-            "reasoning": self.reasoning,
         }
 
     @classmethod
@@ -235,7 +166,6 @@ class ParameterInfo:
             value_sample=data["value_sample"],
             category=data["category"],
             source=data["source"],
-            reasoning=data["reasoning"],
         )
 
     def to_json(self) -> str:
@@ -255,7 +185,6 @@ class ParameterInfo:
             and self.value_sample == other.value_sample
             and self.category == other.category
             and self.source == other.source
-            and self.reasoning == other.reasoning
         )
 
 
@@ -265,22 +194,24 @@ class APIAnalysisResult:
 
     request_id: str
     endpoint: str
-    purpose: str
+    api_type: APIType
     parameters: List[ParameterInfo]
-    reproducibility: str  # reproducible, complex, unknown
-    reproducibility_reason: str
-    confidence: float  # 0-1
+    has_signature: bool
+    signature_fields: List[str]
+    matches_target: bool
+    call_count: int
 
     def to_dict(self) -> dict:
-        """序列化为字典，递归序列化嵌套的 ParameterInfo"""
+        """序列化为字典"""
         return {
             "request_id": self.request_id,
             "endpoint": self.endpoint,
-            "purpose": self.purpose,
+            "api_type": self.api_type.value,
             "parameters": [p.to_dict() for p in self.parameters],
-            "reproducibility": self.reproducibility,
-            "reproducibility_reason": self.reproducibility_reason,
-            "confidence": self.confidence,
+            "has_signature": self.has_signature,
+            "signature_fields": self.signature_fields,
+            "matches_target": self.matches_target,
+            "call_count": self.call_count,
         }
 
     @classmethod
@@ -289,11 +220,12 @@ class APIAnalysisResult:
         return cls(
             request_id=data["request_id"],
             endpoint=data["endpoint"],
-            purpose=data["purpose"],
+            api_type=APIType(data["api_type"]),
             parameters=[ParameterInfo.from_dict(p) for p in data["parameters"]],
-            reproducibility=data["reproducibility"],
-            reproducibility_reason=data["reproducibility_reason"],
-            confidence=data["confidence"],
+            has_signature=data["has_signature"],
+            signature_fields=data["signature_fields"],
+            matches_target=data["matches_target"],
+            call_count=data["call_count"],
         )
 
     def to_json(self) -> str:
@@ -311,43 +243,41 @@ class APIAnalysisResult:
         return (
             self.request_id == other.request_id
             and self.endpoint == other.endpoint
-            and self.purpose == other.purpose
+            and self.api_type == other.api_type
             and self.parameters == other.parameters
-            and self.reproducibility == other.reproducibility
-            and self.reproducibility_reason == other.reproducibility_reason
-            and self.confidence == other.confidence
+            and self.has_signature == other.has_signature
+            and self.signature_fields == other.signature_fields
+            and self.matches_target == other.matches_target
+            and self.call_count == other.call_count
         )
 
 
 @dataclass
-class GeneratedCode:
-    """生成的 Python 代码"""
+class DataLink:
+    """数据链路"""
 
-    api_id: str
-    code: str
-    session_params: List[str]
-    verification_status: str  # pending, passed, failed
-    failure_reason: Optional[str]
+    source_endpoint: str  # 源接口路径
+    target_endpoint: str  # 目标接口路径
+    link_field: str  # 关联字段名（如 id）
+    link_type: str  # 链路类型: list_to_detail, list_to_media, detail_to_media
 
     def to_dict(self) -> dict:
         """序列化为字典"""
         return {
-            "api_id": self.api_id,
-            "code": self.code,
-            "session_params": self.session_params,
-            "verification_status": self.verification_status,
-            "failure_reason": self.failure_reason,
+            "source_endpoint": self.source_endpoint,
+            "target_endpoint": self.target_endpoint,
+            "link_field": self.link_field,
+            "link_type": self.link_type,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "GeneratedCode":
+    def from_dict(cls, data: dict) -> "DataLink":
         """从字典反序列化"""
         return cls(
-            api_id=data["api_id"],
-            code=data["code"],
-            session_params=data["session_params"],
-            verification_status=data["verification_status"],
-            failure_reason=data.get("failure_reason"),
+            source_endpoint=data["source_endpoint"],
+            target_endpoint=data["target_endpoint"],
+            link_field=data["link_field"],
+            link_type=data["link_type"],
         )
 
     def to_json(self) -> str:
@@ -355,51 +285,67 @@ class GeneratedCode:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, json_str: str) -> "GeneratedCode":
+    def from_json(cls, json_str: str) -> "DataLink":
         """从 JSON 字符串反序列化"""
         return cls.from_dict(json.loads(json_str))
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, GeneratedCode):
+        if not isinstance(other, DataLink):
             return NotImplemented
         return (
-            self.api_id == other.api_id
-            and self.code == other.code
-            and self.session_params == other.session_params
-            and self.verification_status == other.verification_status
-            and self.failure_reason == other.failure_reason
+            self.source_endpoint == other.source_endpoint
+            and self.target_endpoint == other.target_endpoint
+            and self.link_field == other.link_field
+            and self.link_type == other.link_type
         )
 
 
 @dataclass
-class CrawlConfig:
-    """采集配置"""
+class AnalysisReport:
+    """分析报告"""
 
-    concurrency: int
-    interval_ms: int
-    max_rounds: int
-    failure_threshold: int
-    round_interval_ms: int
+    target: CaptureTarget
+    results: List[APIAnalysisResult]
+    data_links: List[DataLink]
+    total_captured: int  # 总捕获请求数（过滤前）
+    total_analyzed: int  # 分析的接口数（过滤后）
+    target_matched: int  # 匹配用户目标的接口数
+    generated_at: datetime  # 报告生成时间
 
     def to_dict(self) -> dict:
         """序列化为字典"""
         return {
-            "concurrency": self.concurrency,
-            "interval_ms": self.interval_ms,
-            "max_rounds": self.max_rounds,
-            "failure_threshold": self.failure_threshold,
-            "round_interval_ms": self.round_interval_ms,
+            "target": {
+                "app_name": self.target.app_name,
+                "target_data": self.target.target_data,
+                "operation_pages": self.target.operation_pages,
+                "filter_domains": self.target.filter_domains,
+            },
+            "results": [r.to_dict() for r in self.results],
+            "data_links": [dl.to_dict() for dl in self.data_links],
+            "total_captured": self.total_captured,
+            "total_analyzed": self.total_analyzed,
+            "target_matched": self.target_matched,
+            "generated_at": self.generated_at.isoformat(),
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "CrawlConfig":
+    def from_dict(cls, data: dict) -> "AnalysisReport":
         """从字典反序列化"""
+        target_data = data["target"]
         return cls(
-            concurrency=data["concurrency"],
-            interval_ms=data["interval_ms"],
-            max_rounds=data["max_rounds"],
-            failure_threshold=data["failure_threshold"],
-            round_interval_ms=data["round_interval_ms"],
+            target=CaptureTarget(
+                app_name=target_data["app_name"],
+                target_data=target_data["target_data"],
+                operation_pages=target_data["operation_pages"],
+                filter_domains=target_data.get("filter_domains"),
+            ),
+            results=[APIAnalysisResult.from_dict(r) for r in data["results"]],
+            data_links=[DataLink.from_dict(dl) for dl in data["data_links"]],
+            total_captured=data["total_captured"],
+            total_analyzed=data["total_analyzed"],
+            target_matched=data["target_matched"],
+            generated_at=datetime.fromisoformat(data["generated_at"]),
         )
 
     def to_json(self) -> str:
@@ -407,125 +353,76 @@ class CrawlConfig:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, json_str: str) -> "CrawlConfig":
+    def from_json(cls, json_str: str) -> "AnalysisReport":
         """从 JSON 字符串反序列化"""
         return cls.from_dict(json.loads(json_str))
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CrawlConfig):
+        if not isinstance(other, AnalysisReport):
             return NotImplemented
         return (
-            self.concurrency == other.concurrency
-            and self.interval_ms == other.interval_ms
-            and self.max_rounds == other.max_rounds
-            and self.failure_threshold == other.failure_threshold
-            and self.round_interval_ms == other.round_interval_ms
+            self.target.app_name == other.target.app_name
+            and self.target.target_data == other.target.target_data
+            and self.target.operation_pages == other.target.operation_pages
+            and self.target.filter_domains == other.target.filter_domains
+            and self.results == other.results
+            and self.data_links == other.data_links
+            and self.total_captured == other.total_captured
+            and self.total_analyzed == other.total_analyzed
+            and self.target_matched == other.target_matched
+            and self.generated_at == other.generated_at
         )
+
+
+# ============================================================
+# 结果类型
+# ============================================================
 
 
 @dataclass
-class CrawlStats:
-    """采集统计"""
+class RequirementStatus:
+    """需求收集状态"""
 
-    total_requests: int
-    success_count: int
-    failure_count: int
-    consecutive_failures: int
-    data_collected: int
-
-    def to_dict(self) -> dict:
-        """序列化为字典"""
-        return {
-            "total_requests": self.total_requests,
-            "success_count": self.success_count,
-            "failure_count": self.failure_count,
-            "consecutive_failures": self.consecutive_failures,
-            "data_collected": self.data_collected,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "CrawlStats":
-        """从字典反序列化"""
-        return cls(
-            total_requests=data["total_requests"],
-            success_count=data["success_count"],
-            failure_count=data["failure_count"],
-            consecutive_failures=data["consecutive_failures"],
-            data_collected=data["data_collected"],
-        )
-
-    def to_json(self) -> str:
-        """序列化为 JSON 字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
-
-    @classmethod
-    def from_json(cls, json_str: str) -> "CrawlStats":
-        """从 JSON 字符串反序列化"""
-        return cls.from_dict(json.loads(json_str))
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CrawlStats):
-            return NotImplemented
-        return (
-            self.total_requests == other.total_requests
-            and self.success_count == other.success_count
-            and self.failure_count == other.failure_count
-            and self.consecutive_failures == other.consecutive_failures
-            and self.data_collected == other.data_collected
-        )
+    is_complete: bool
+    missing_fields: List[str] = field(default_factory=list)
+    message: str = ""
 
 
 @dataclass
-class CrawlTask:
-    """采集任务"""
+class ConnectionResult:
+    """设备连接结果"""
 
-    id: str
-    api_id: str
-    mode: str  # batch, replay
-    config: CrawlConfig
-    status: str  # running, paused, completed, failed
-    stats: CrawlStats
+    success: bool
+    device_id: str = ""
+    error: str = ""
+    suggestion: str = ""
 
-    def to_dict(self) -> dict:
-        """序列化为字典，递归序列化嵌套的 CrawlConfig 和 CrawlStats"""
-        return {
-            "id": self.id,
-            "api_id": self.api_id,
-            "mode": self.mode,
-            "config": self.config.to_dict(),
-            "status": self.status,
-            "stats": self.stats.to_dict(),
-        }
 
-    @classmethod
-    def from_dict(cls, data: dict) -> "CrawlTask":
-        """从字典反序列化"""
-        return cls(
-            id=data["id"],
-            api_id=data["api_id"],
-            mode=data["mode"],
-            config=CrawlConfig.from_dict(data["config"]),
-            status=data["status"],
-            stats=CrawlStats.from_dict(data["stats"]),
-        )
+@dataclass
+class CertResult:
+    """证书安装结果"""
 
-    def to_json(self) -> str:
-        """序列化为 JSON 字符串"""
-        return json.dumps(self.to_dict(), ensure_ascii=False)
+    success: bool
+    error: str = ""
+    suggestion: str = ""
 
-    @classmethod
-    def from_json(cls, json_str: str) -> "CrawlTask":
-        """从 JSON 字符串反序列化"""
-        return cls.from_dict(json.loads(json_str))
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CrawlTask):
-            return NotImplemented
-        return (
-            self.id == other.id
-            and self.api_id == other.api_id
-            and self.mode == other.mode
-            and self.config == other.config
-            and self.status == other.status
-            and self.stats == other.stats
-        )
+@dataclass
+class ProxyResult:
+    """代理设置结果"""
+
+    success: bool
+    host: str = ""
+    port: int = 0
+    error: str = ""
+    suggestion: str = ""
+
+
+@dataclass
+class ProcessResult:
+    """进程启动结果"""
+
+    success: bool
+    pid: int = 0
+    error: str = ""
+    suggestion: str = ""
