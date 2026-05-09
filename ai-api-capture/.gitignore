@@ -5,10 +5,11 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-output/captures/*.json
-output/analysis/*.json
-output/analysis/*.md
-output/generated/*.json
-output/data/**/*.json
+output/captures/
+output/analysis/
+output/generated/
+output/data/
+*.flow
 index.db
 .pytest_cache/
+.hypothesis/
