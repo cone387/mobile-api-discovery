@@ -1,0 +1,570 @@
+{
+  "timestamp": 1778147802982,
+  "code": 0,
+  "mchid": "HMJC1000004",
+  "chid": "HMJC1000004",
+  "userId": 2814651518,
+  "data": {
+    "pageFlag": "1",
+    "hasMore": true,
+    "dataList": [
+      {
+        "bookId": "41000103405",
+        "bookName": "为王",
+        "author": "",
+        "coverWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000103405/41000103405.jpg?t=1762337054309&imageView2/0/w/200/h/267",
+        "coverCutWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000103405/41000103405.jpg?t=1762337054309&image_process=resize,h_300",
+        "introduction": "秦毅修得仙人之资后，下山准备与青梅竹马的周琳完成婚约，在途中救下沈氏集团总裁沈知礼，来到周家后，才发现如今的周家已是物是人非，周琳因嫌弃秦毅无权无财，拒绝了秦毅，秦毅离去后，又再次遇到了沈知礼，沈知礼提出与秦毅结婚，秦毅出于知己的目的，答应答应了下来，却不曾想卷入了一场家族争斗的漩涡当中，最终在经历了种种的困难之后，秦毅与沈知礼相知相守，成为了一对真正的夫妻。",
+        "protagonist": [
+          "秦毅",
+          "沈知礼"
+        ],
+        "updateNum": 95,
+        "finishStatusCn": "已完结",
+        "finishStatus": 1,
+        "bookTagIds": [
+          1163,
+          474,
+          1129,
+          838,
+          1124
+        ],
+        "bookTags": [
+          "女总裁",
+          "高手下山",
+          "都市",
+          "情感",
+          "修仙"
+        ],
+        "showTag": "情感",
+        "showTagDeepLink": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"情感\"}",
+        "videoStarsNum": "855.1万",
+        "videoStarsNumActual": 8551481,
+        "chapterImg": "https://dzzt-video.cbread.cn/86/5x0/50x4/504x3/50430100014/571162868_2/571162868.mp4.jpg",
+        "chapterName": "第一集",
+        "chapterIndex": 1,
+        "chapterId": "571162868",
+        "maxChapterId": "571162962",
+        "maxChapterName": "第九十五集",
+        "utime": "2026-02-04 20:02:05",
+        "omap": {
+          "sceneId": "dzmf_video_zky_reco",
+          "logId": "20bee5d10a1e8ddc48244bde0f938627",
+          "recId": "bigdata_rec",
+          "strategyId": "gey1q1zo",
+          "extendMap": "{\"ab_info\":{\"ett7y4cq\":{\"strategy_id\":\"gk6rjfmv\",\"strategy_name\":\"实验组1\"},\"ehht1iqo\":{\"strategy_id\":\"g6xxqw24\",\"strategy_name\":\"实验组\"},\"ezwsmbe1\":{\"strategy_id\":\"gbwjrdtg\",\"strategy_name\":\"对照组\"},\"el1zxu3g\":{\"strategy_id\":\"\",\"strategy_name\":\"\"},\"e8yz71wm\":{\"strategy_id\":\"g02wfer8\",\"strategy_name\":\"对照组\"},\"edbv9nes\":{\"strategy_id\":\"gkznvl2b\",\"strategy_name\":\"实验组4\"}}}"
+        },
+        "likesNum": "13.7万",
+        "likesNumActual": 136847,
+        "nextChapterId": "571162869",
+        "nextChapterName": "第二集",
+        "shareTimes": "1.3万",
+        "iconType": 0,
+        "episodeTags": {
+          "isNew": 0,
+          "ifFree": true,
+          "foreverFree": true
+        },
+        "performerList": [
+          {
+            "performerId": "752_1",
+            "performerName": "赖艺",
+            "icon": "https://kyyimg.kkyd.cn/others/dzmfActorImage/date20250409/1744177108675.jpg",
+            "label": "主演15部剧",
+            "action": "hmjc://app.client?action=collection&param=%7B%22cover%22%3A%22https%3A%2F%2Fkyyimg.kkyd.cn%2Fothers%2FdzmfActorImage%2Fdate20250409%2F1744177108675.jpg%22%2C%22size%22%3A%22%E4%B8%BB%E6%BC%9415%E9%83%A8%E5%89%A7%22%2C%22leadName%22%3A%22%E8%B5%96%E8%89%BA%22%2C%22leadSex%22%3A%221%22%2C%22bookName%22%3A%22%E4%B8%BA%E7%8E%8B%22%2C%22introduction%22%3A%22%E8%B5%96%E8%89%BA%EF%BC%8C%E6%80%A7%E5%88%AB%E7%94%B7%EF%BC%8C%E8%BA%AB%E9%AB%98187cm%EF%BC%8C%E4%BD%93%E9%87%8D75kg%EF%BC%8C%E9%87%91%E7%89%9B%E5%BA%A7%EF%BC%8C%E6%9B%BE%E5%8F%82%E6%BC%94%E3%80%8A%E4%B8%BA%E7%8E%8B%E3%80%8B%E3%80%8A%E6%88%91%E6%9C%AC%E6%97%A0%E6%95%8C%E3%80%8B%E3%80%8A%E7%9C%9F%E9%BE%99%E6%97%A0%E5%8F%8C%E3%80%8B%E3%80%8A%E5%AE%A1%E5%88%A4%E6%88%98%E7%A5%9E%E3%80%8B%E3%80%8A%E4%B9%9D%E6%98%9F%E9%BE%99%E5%B8%85%E4%B9%8B%E7%A0%B4%E5%86%9B%E3%80%8B%E3%80%8A%E6%9A%97%E5%A4%9C%E5%90%9B%E7%8E%8B%E3%80%8B%E3%80%8A%E5%88%BA%E6%9D%80%E6%88%98%E7%A5%9E%E5%A4%A7%E4%BA%BA%E3%80%8B%E3%80%8A%E4%BD%A9%E7%94%B2%E3%80%8B%E7%AD%89%E4%BD%9C%E5%93%81%E3%80%82%22%2C%22leadId%22%3A%22752_1%22%2C%22bookId%22%3A%2241000103405%22%7D",
+            "isMore": 0,
+            "sex": 1,
+            "performNum": 15,
+            "introduction": "赖艺，性别男，身高187cm，体重75kg，金牛座，曾参演《为王》《我本无敌》《真龙无双》《审判战神》《九星龙帅之破军》《暗夜君王》《刺杀战神大人》《佩甲》等作品。"
+          },
+          {
+            "performerId": "753_1",
+            "performerName": "赵琳苑",
+            "icon": "https://kyyimg.kkyd.cn/others/dzmfActorImage/date20250409/1744177108717.jpg",
+            "label": "主演7部剧",
+            "action": "hmjc://app.client?action=collection&param=%7B%22cover%22%3A%22https%3A%2F%2Fkyyimg.kkyd.cn%2Fothers%2FdzmfActorImage%2Fdate20250409%2F1744177108717.jpg%22%2C%22size%22%3A%22%E4%B8%BB%E6%BC%947%E9%83%A8%E5%89%A7%22%2C%22leadName%22%3A%22%E8%B5%B5%E7%90%B3%E8%8B%91%22%2C%22leadSex%22%3A%222%22%2C%22bookName%22%3A%22%E4%B8%BA%E7%8E%8B%22%2C%22introduction%22%3A%22%E8%B5%B5%E7%90%B3%E8%8B%91%EF%BC%8C%E6%80%A7%E5%88%AB%E5%A5%B3%EF%BC%8C%E8%BA%AB%E9%AB%98170cm%EF%BC%8C%E4%BD%93%E9%87%8D55kg%EF%BC%8C%E6%B0%B4%E7%93%B6%E5%BA%A7%EF%BC%8C%E6%9B%BE%E5%8F%82%E6%BC%94%E3%80%8A%E6%88%91%E6%9C%AC%E6%97%A0%E6%95%8C%E3%80%8B%E3%80%8A%E5%AE%A1%E5%88%A4%E6%88%98%E7%A5%9E%E3%80%8B%E3%80%8A%E4%B8%BA%E7%8E%8B%E3%80%8B%E3%80%8A%E5%88%BA%E6%9D%80%E6%88%98%E7%A5%9E%E5%A4%A7%E4%BA%BA%E3%80%8B%E3%80%8A%E5%8E%9F%E6%9D%A5%E6%88%91%E6%98%AF%E5%A4%A9%E4%B8%8B%E7%AC%AC%E4%B8%80%E3%80%8B%E7%AD%89%E4%BD%9C%E5%93%81%E3%80%82%22%2C%22leadId%22%3A%22753_1%22%2C%22bookId%22%3A%2241000103405%22%7D",
+            "isMore": 0,
+            "sex": 2,
+            "performNum": 7,
+            "introduction": "赵琳苑，性别女，身高170cm，体重55kg，水瓶座，曾参演《我本无敌》《审判战神》《为王》《刺杀战神大人》《原来我是天下第一》等作品。"
+          }
+        ],
+        "marketStatus": 0,
+        "clickNum": 0,
+        "screenOrientation": 2,
+        "cpPartnerName": "版权方",
+        "cpPartnerId": 20287,
+        "playletPosition": 0,
+        "recPageNum": 1,
+        "isRecPlaylet": 1,
+        "fromType": 0,
+        "rankId": 0,
+        "coverBgColor": 4279569934,
+        "content": {
+          "mp4SwitchUrl": [
+            "https://mfvideo.cbread.cn/1a3b65669c6774098cfff9c488e4488d/69fda610/86/5x0/50x4/504x3/50430100014/571162868_2/571162868.720p.narrowv3.mp4",
+            "https://txonlmfvideo.cbread.cn/86/5x0/50x4/504x3/50430100014/571162868_2/571162868.720p.narrowv3.mp4?t=69fda610&sign=1df390c326db3f220d0733e2bd257a7a",
+            "https://txonlmfvideo.cbread.cn/86/5x0/50x4/504x3/50430100014/571162868_2/571162868.720p.wzh26506V2.mp4?t=69fda610&sign=1df390c326db3f220d0733e2bd257a7a"
+          ],
+          "pressBeianhao": true,
+          "spriteImg": "https://dzzt-video.cbread.cn/86/5x0/50x4/504x3/50430100014/571162868_2/571162868_shot.vtt",
+          "mp4UrlRate": "720P",
+          "resolutionRates": [
+            {
+              "rate": "1080P",
+              "needVip": 1,
+              "describe": "高清"
+            },
+            {
+              "rate": "720P",
+              "needVip": 0,
+              "describe": "准高清"
+            },
+            {
+              "rate": "540P",
+              "needVip": 0,
+              "describe": "标清"
+            }
+          ],
+          "mp4Url": "https://mfvideo.cbread.cn/d8ef06a33971ed2f4f928d7d5b95379a/69fda610/86/5x0/50x4/504x3/50430100014/571162868_2/571162868.720p.wzh26506V2.mp4"
+        },
+        "firstCanFree": "1716274232240",
+        "recordNumber": "（点众）网微剧备字（2024）第353号",
+        "videoLinkType": 1,
+        "existHighlightVideo": false,
+        "contentType": "4",
+        "mark": "",
+        "newShowTagMap": {
+          "女总裁": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"女总裁\",\"tagSource\":\"home\"}",
+          "都市": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"都市\",\"tagSource\":\"home\"}",
+          "高手下山": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"高手下山\",\"tagSource\":\"home\"}"
+        },
+        "postRating": "S+",
+        "discussInfo": "4015_1704",
+        "inBookShelf": false
+      },
+      {
+        "bookId": "41000166327",
+        "bookName": "报告！新夫人是香软小蛋糕",
+        "author": "",
+        "coverWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000166327/41000166327.jpg?t=1775922827539&imageView2/0/w/200/h/267",
+        "coverCutWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000166327/41000166327.jpg?t=1775922827539&image_process=resize,h_300",
+        "introduction": "真千金阮芽被保姆替换在乡下吃不饱穿不暖，终于在十九岁那年被家人接回去，本以为能过上吃饱的生活，没想到家人却让她替假千金嫁给一个逝去的男人。谁都觉得阮芽这辈子就算是彻底完了，但谁知道，那个权势滔天的男人竟然没有死……",
+        "protagonist": [
+          "封迟琰",
+          "阮芽"
+        ],
+        "updateNum": 90,
+        "finishStatusCn": "已完结",
+        "finishStatus": 1,
+        "bookTagIds": [
+          1294,
+          1182,
+          1145,
+          1589,
+          1157,
+          1299,
+          1697
+        ],
+        "bookTags": [
+          "情感流",
+          "真假千金",
+          "现代言情",
+          "漫剧",
+          "替身",
+          "千金",
+          "仿真人动态漫"
+        ],
+        "showTag": "现代言情",
+        "showTagDeepLink": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"现代言情\"}",
+        "videoStarsNum": "117.2万",
+        "videoStarsNumActual": 1172373,
+        "chapterImg": "https://dzzt-video.cbread.cn/75/7x2/72x3/723x6/72366100014/611673957_1/611673957.mp4.jpg",
+        "chapterName": "第一集",
+        "chapterIndex": 1,
+        "chapterId": "611673957",
+        "maxChapterId": "611674046",
+        "maxChapterName": "第九十集",
+        "utime": "2026-04-18 09:45:07",
+        "omap": {
+          "sceneId": "dzmf_video_zky_reco",
+          "logId": "20bee5d10a1e8ddc48244bde0f938627",
+          "recId": "bigdata_rec",
+          "strategyId": "gey1q1zo",
+          "extendMap": "{\"ab_info\":{\"ett7y4cq\":{\"strategy_id\":\"gk6rjfmv\",\"strategy_name\":\"实验组1\"},\"ehht1iqo\":{\"strategy_id\":\"g6xxqw24\",\"strategy_name\":\"实验组\"},\"ezwsmbe1\":{\"strategy_id\":\"gbwjrdtg\",\"strategy_name\":\"对照组\"},\"el1zxu3g\":{\"strategy_id\":\"\",\"strategy_name\":\"\"},\"e8yz71wm\":{\"strategy_id\":\"g02wfer8\",\"strategy_name\":\"对照组\"},\"edbv9nes\":{\"strategy_id\":\"gkznvl2b\",\"strategy_name\":\"实验组4\"}}}"
+        },
+        "likesNum": "3.8万",
+        "likesNumActual": 38440,
+        "nextChapterId": "611673958",
+        "nextChapterName": "第二集",
+        "iconType": 0,
+        "episodeTags": {
+          "isNew": 0,
+          "ifFree": true,
+          "foreverFree": true
+        },
+        "performerList": [],
+        "marketStatus": 0,
+        "clickNum": 0,
+        "screenOrientation": 2,
+        "cpPartnerName": "版权方",
+        "cpPartnerId": 24595,
+        "playletPosition": 1,
+        "recPageNum": 1,
+        "isRecPlaylet": 1,
+        "fromType": 0,
+        "rankId": 5,
+        "rankActionTips": "热搜榜TOP2",
+        "rankAction": "hmjc://com.dz.hmjc?routerType=2&action=flutter/marketSinglePage&param=%7B%22title%22%3A%22%E6%8E%92%E8%A1%8C%E6%A6%9C%22%2C%22channelId%22%3A5%7D",
+        "rankSrc": "搜索5.9万",
+        "coverBgColor": 4284556584,
+        "content": {
+          "mp4SwitchUrl": [
+            "https://mfvideo.cbread.cn/0bf64d17799d317a38285fb8e01f9d72/69fda610/75/7x2/72x3/723x6/72366100014/611673957_1/611673957.720p.narrowv3.mp4",
+            "https://txonlmfvideo.cbread.cn/75/7x2/72x3/723x6/72366100014/611673957_1/611673957.720p.narrowv3.mp4?t=69fda610&sign=b43b73ea35e20a8923c86af6e9a020db",
+            "https://txonlmfvideo.cbread.cn/75/7x2/72x3/723x6/72366100014/611673957_1/611673957.720p.wzh26506V2.mp4?t=69fda610&sign=b43b73ea35e20a8923c86af6e9a020db"
+          ],
+          "pressBeianhao": true,
+          "spriteImg": "https://dzzt-video.cbread.cn/75/7x2/72x3/723x6/72366100014/611673957_1/611673957_shot.vtt",
+          "mp4UrlRate": "720P",
+          "resolutionRates": [
+            {
+              "rate": "1080P",
+              "needVip": 1,
+              "describe": "高清"
+            },
+            {
+              "rate": "720P",
+              "needVip": 0,
+              "describe": "准高清"
+            },
+            {
+              "rate": "540P",
+              "needVip": 0,
+              "describe": "标清"
+            }
+          ],
+          "mp4Url": "https://mfvideo.cbread.cn/712ca526cbb7e69cd5f9de7ead8f4706/69fda610/75/7x2/72x3/723x6/72366100014/611673957_1/611673957.720p.wzh26506V2.mp4"
+        },
+        "firstCanFree": "1776476707316",
+        "recordNumber": "（点众）网微剧备字（2026）第8599号",
+        "videoLinkType": 1,
+        "existHighlightVideo": false,
+        "contentType": "4",
+        "mark": "",
+        "newShowTagMap": {
+          "情感流": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"情感流\",\"tagSource\":\"home\"}",
+          "现代言情": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"现代言情\",\"tagSource\":\"home\"}",
+          "真假千金": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"真假千金\",\"tagSource\":\"home\"}"
+        },
+        "postRating": "A+",
+        "inBookShelf": false
+      },
+      {
+        "bookId": "41000173709",
+        "bookName": "潜龙护卫",
+        "author": "",
+        "coverWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000173709/41000173709.jpg?t=1776852743997&imageView2/0/w/200/h/267",
+        "coverCutWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000173709/41000173709.jpg?t=1776852743997&image_process=resize,h_300",
+        "introduction": "顶尖强者秦穆然以“冥王”之名归国，遵婚约保护陆氏集团总裁陆倾城，初遇国安署队长安心时展露特殊身份，二人意外发生一夜情。他在西餐厅击退国际杀手玛丽，识破陆倾城闺蜜沈冰岚的内鬼身份，屡次化解韩家为夺抗癌项目设下的暗杀与商业陷阱，硬抗狙击、收服青帮龙爷，轻松碾压杀手徐二狗。",
+        "protagonist": [
+          "秦穆然",
+          "陆倾城"
+        ],
+        "updateNum": 65,
+        "finishStatusCn": "已完结",
+        "finishStatus": 1,
+        "bookTagIds": [
+          476,
+          1129,
+          441,
+          838,
+          417
+        ],
+        "bookTags": [
+          "强者回归",
+          "都市",
+          "现实",
+          "情感",
+          "逆袭"
+        ],
+        "showTag": "都市",
+        "showTagDeepLink": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"都市\"}",
+        "videoStarsNum": "101.4万",
+        "videoStarsNumActual": 1014085,
+        "chapterImg": "https://dzzt-video.cbread.cn/09/9x0/90x7/907x3/90737100014/611980390_1/611980390.mp4.jpg",
+        "chapterName": "第一集",
+        "chapterIndex": 1,
+        "chapterId": "611980390",
+        "maxChapterId": "611980454",
+        "maxChapterName": "第六十五集",
+        "utime": "2026-04-27 10:53:50",
+        "omap": {
+          "sceneId": "dzmf_video_zky_reco",
+          "logId": "20bee5d10a1e8ddc48244bde0f938627",
+          "recId": "bigdata_rec",
+          "strategyId": "gey1q1zo",
+          "extendMap": "{\"ab_info\":{\"ett7y4cq\":{\"strategy_id\":\"gk6rjfmv\",\"strategy_name\":\"实验组1\"},\"ehht1iqo\":{\"strategy_id\":\"g6xxqw24\",\"strategy_name\":\"实验组\"},\"ezwsmbe1\":{\"strategy_id\":\"gbwjrdtg\",\"strategy_name\":\"对照组\"},\"el1zxu3g\":{\"strategy_id\":\"\",\"strategy_name\":\"\"},\"e8yz71wm\":{\"strategy_id\":\"g02wfer8\",\"strategy_name\":\"对照组\"},\"edbv9nes\":{\"strategy_id\":\"gkznvl2b\",\"strategy_name\":\"实验组4\"}}}"
+        },
+        "likesNum": "3.2万",
+        "likesNumActual": 31966,
+        "nextChapterId": "611980391",
+        "nextChapterName": "第二集",
+        "iconType": 0,
+        "episodeTags": {
+          "isNew": 0,
+          "ifFree": true,
+          "foreverFree": true
+        },
+        "performerList": [
+          {
+            "performerId": "1683_1",
+            "performerName": "宣以豪",
+            "icon": "https://kyyimg.kkyd.cn/others/dzmfActorImage/date20250409/1744177169299.jpg",
+            "label": "主演17部剧",
+            "action": "hmjc://app.client?action=collection&param=%7B%22cover%22%3A%22https%3A%2F%2Fkyyimg.kkyd.cn%2Fothers%2FdzmfActorImage%2Fdate20250409%2F1744177169299.jpg%22%2C%22size%22%3A%22%E4%B8%BB%E6%BC%9417%E9%83%A8%E5%89%A7%22%2C%22leadName%22%3A%22%E5%AE%A3%E4%BB%A5%E8%B1%AA%22%2C%22leadSex%22%3A%221%22%2C%22bookName%22%3A%22%E6%BD%9C%E9%BE%99%E6%8A%A4%E5%8D%AB%22%2C%22introduction%22%3A%22%E5%AE%A3%E4%BB%A5%E8%B1%AA%EF%BC%8C1994%E5%B9%B44%E6%9C%8826%E6%97%A5%E5%87%BA%E7%94%9F%E4%BA%8E%E5%AE%89%E5%BE%BD%E5%90%88%E8%82%A5%EF%BC%8C%E4%B8%AD%E5%9B%BD%E5%86%85%E5%9C%B0%E7%94%B7%E6%BC%94%E5%91%98%EF%BC%8C187cm%EF%BC%8C74kg%EF%BC%8C%E6%80%A7%E5%88%AB%E7%94%B7%EF%BC%8C%E6%9B%BE%E5%8F%82%E6%BC%94%E3%80%8A%E5%A5%B6%E7%88%B8%E7%9A%84%E7%A7%91%E6%8A%80%E6%AD%A6%E9%81%93%E9%A6%86%E3%80%8B%E3%80%8A%E6%88%91%E7%9A%84%E5%A6%88%E5%A6%88%E6%9C%80%E7%BE%8E%E3%80%8B%E3%80%8A%E5%8F%82%E5%8A%A0%E5%90%8C%E5%AD%A6%E5%A9%9A%E7%A4%BC%EF%BC%8C%E6%88%91%E6%83%8A%E8%89%B3%E5%85%A8%E5%9C%BA%E3%80%8B%E3%80%8A%E5%90%8C%E5%AD%A6%E5%A9%9A%E7%A4%BC%E4%B8%8A%E6%96%B0%E5%A8%98%E8%BF%BD%E6%82%94%E8%8E%AB%E5%8F%8A%E3%80%8B%E7%AD%89%E4%BD%9C%E5%93%81%E3%80%82%22%2C%22leadId%22%3A%221683_1%22%2C%22bookId%22%3A%2241000173709%22%7D",
+            "isMore": 0,
+            "sex": 1,
+            "performNum": 17,
+            "introduction": "宣以豪，1994年4月26日出生于安徽合肥，中国内地男演员，187cm，74kg，性别男，曾参演《奶爸的科技武道馆》《我的妈妈最美》《参加同学婚礼，我惊艳全场》《同学婚礼上新娘追悔莫及》等作品。"
+          }
+        ],
+        "marketStatus": 0,
+        "clickNum": 0,
+        "screenOrientation": 2,
+        "cpPartnerName": "版权方",
+        "cpPartnerId": 24565,
+        "playletPosition": 2,
+        "recPageNum": 1,
+        "isRecPlaylet": 1,
+        "fromType": 0,
+        "rankId": 1,
+        "rankActionTips": "热播榜TOP5",
+        "rankAction": "hmjc://com.dz.hmjc?routerType=2&action=flutter/marketSinglePage&param=%7B%22title%22%3A%22%E6%8E%92%E8%A1%8C%E6%A6%9C%22%2C%22channelId%22%3A1%7D",
+        "rankSrc": "热度值327.6万",
+        "coverBgColor": 4284757059,
+        "content": {
+          "mp4SwitchUrl": [
+            "https://mfvideo.cbread.cn/375b8df073b5003f70325cf7ff8bc74b/69fda610/09/9x0/90x7/907x3/90737100014/611980390_1/611980390.720p.narrowv3.mp4",
+            "https://txonlmfvideo.cbread.cn/09/9x0/90x7/907x3/90737100014/611980390_1/611980390.720p.narrowv3.mp4?t=69fda610&sign=5ce59dcbd5d2e993f488a28d2cf920f8",
+            "https://txonlmfvideo.cbread.cn/09/9x0/90x7/907x3/90737100014/611980390_1/611980390.720p.wzh26506V2.mp4?t=69fda610&sign=5ce59dcbd5d2e993f488a28d2cf920f8"
+          ],
+          "pressBeianhao": true,
+          "spriteImg": "https://dzzt-video.cbread.cn/09/9x0/90x7/907x3/90737100014/611980390_1/611980390_shot.vtt",
+          "mp4UrlRate": "720P",
+          "resolutionRates": [
+            {
+              "rate": "1080P",
+              "needVip": 1,
+              "describe": "高清"
+            },
+            {
+              "rate": "720P",
+              "needVip": 0,
+              "describe": "准高清"
+            },
+            {
+              "rate": "540P",
+              "needVip": 0,
+              "describe": "标清"
+            }
+          ],
+          "mp4Url": "https://mfvideo.cbread.cn/5989a3f4c96167127e1695806dcfeefa/69fda610/09/9x0/90x7/907x3/90737100014/611980390_1/611980390.720p.wzh26506V2.mp4"
+        },
+        "firstCanFree": "1777082651173",
+        "recordNumber": "（点众）网微剧备字（2026）第9982号",
+        "videoLinkType": 1,
+        "existHighlightVideo": false,
+        "contentType": "4",
+        "mark": "",
+        "newShowTagMap": {
+          "现实": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"现实\",\"tagSource\":\"home\"}",
+          "都市": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"都市\",\"tagSource\":\"home\"}",
+          "强者回归": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"强者回归\",\"tagSource\":\"home\"}"
+        },
+        "postRating": "A+",
+        "inBookShelf": false
+      },
+      {
+        "bookId": "41000107267",
+        "bookName": "飞龙在天",
+        "author": "",
+        "coverWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000107267/41000107267.jpg?t=1730462332009&imageView2/0/w/200/h/267",
+        "coverCutWap": "https://kyyresali.kkyd.cn/cppartner/4x1/41x0/410x0/41000107267/41000107267.jpg?t=1730462332009&image_process=resize,h_300",
+        "introduction": "一场战役，让三个绝世美女失去了丈夫，也让一个姑娘失去了父亲和自己的兄长。就在这个危难的时候废物六皇子李龙鳞站出来说：我负责。从此李龙鳞开始大战邪恶势力，展现出来自己的聪明才智，最终与三个美女携手同行的故事。",
+        "protagonist": [
+          "李龙鳞",
+          "苏凤翎"
+        ],
+        "updateNum": 133,
+        "finishStatusCn": "已完结",
+        "finishStatus": 1,
+        "bookTagIds": [
+          444,
+          840,
+          838,
+          916,
+          417
+        ],
+        "bookTags": [
+          "古装",
+          "权谋",
+          "情感",
+          "穿越",
+          "逆袭"
+        ],
+        "showTag": "穿越",
+        "showTagDeepLink": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"穿越\"}",
+        "videoStarsNum": "1650.8万",
+        "videoStarsNumActual": 16507741,
+        "chapterImg": "https://dzzt-video.cbread.cn/61/7x6/76x2/762x7/76270100014/581722016_1/581722016.mp4.jpg",
+        "chapterName": "第一集",
+        "chapterIndex": 1,
+        "chapterId": "581722016",
+        "maxChapterId": "581722165",
+        "maxChapterName": "第一百三十三集",
+        "utime": "2026-02-04 20:03:03",
+        "omap": {
+          "sceneId": "dzmf_video_zky_reco",
+          "logId": "20bee5d10a1e8ddc48244bde0f938627",
+          "recId": "bigdata_rec",
+          "strategyId": "gey1q1zo",
+          "extendMap": "{\"ab_info\":{\"ett7y4cq\":{\"strategy_id\":\"gk6rjfmv\",\"strategy_name\":\"实验组1\"},\"ehht1iqo\":{\"strategy_id\":\"g6xxqw24\",\"strategy_name\":\"实验组\"},\"ezwsmbe1\":{\"strategy_id\":\"gbwjrdtg\",\"strategy_name\":\"对照组\"},\"el1zxu3g\":{\"strategy_id\":\"\",\"strategy_name\":\"\"},\"e8yz71wm\":{\"strategy_id\":\"g02wfer8\",\"strategy_name\":\"对照组\"},\"edbv9nes\":{\"strategy_id\":\"gkznvl2b\",\"strategy_name\":\"实验组4\"}}}"
+        },
+        "likesNum": "33.4万",
+        "likesNumActual": 333847,
+        "nextChapterId": "581722017",
+        "nextChapterName": "第二集",
+        "shareTimes": "4.4万",
+        "iconType": 0,
+        "episodeTags": {
+          "isNew": 0,
+          "ifFree": true,
+          "foreverFree": true
+        },
+        "performerList": [
+          {
+            "performerId": "663_1",
+            "performerName": "李进源",
+            "icon": "https://kyyimg.kkyd.cn/others/dzmfActorImage/date20250409/1744177102167.jpg",
+            "label": "主演14部剧",
+            "action": "hmjc://app.client?action=collection&param=%7B%22cover%22%3A%22https%3A%2F%2Fkyyimg.kkyd.cn%2Fothers%2FdzmfActorImage%2Fdate20250409%2F1744177102167.jpg%22%2C%22size%22%3A%22%E4%B8%BB%E6%BC%9414%E9%83%A8%E5%89%A7%22%2C%22leadName%22%3A%22%E6%9D%8E%E8%BF%9B%E6%BA%90%22%2C%22leadSex%22%3A%221%22%2C%22bookName%22%3A%22%E9%A3%9E%E9%BE%99%E5%9C%A8%E5%A4%A9%22%2C%22introduction%22%3A%22%E6%9D%8E%E8%BF%9B%E6%BA%90%EF%BC%8C%E6%80%A7%E5%88%AB%E7%94%B7%EF%BC%8C188cm%EF%BC%8C76kg%EF%BC%8C%E9%BB%91%E9%BE%99%E6%B1%9F%E4%BD%B3%E6%9C%A8%E6%96%AF%E4%BA%BA%EF%BC%8C%E6%9B%BE%E5%8F%82%E6%BC%94%E3%80%8A%E5%B0%8F%E7%A5%9E%E5%8C%BB%E5%92%8C%E5%9B%9B%E4%B8%AA%E7%BB%9D%E8%89%B2%E5%B8%88%E5%A7%90%E3%80%8B%E3%80%8A%E5%B0%91%E5%B9%B4%E5%A4%A9%E5%8C%BB%E3%80%8B%E3%80%8A%E9%80%86%E8%A2%AD%E5%BD%92%E6%9D%A5%EF%BC%8C%E6%88%91%E6%98%AF%E9%89%B4%E5%AE%9D%E5%A4%A7%E5%B8%88%E3%80%8B%E3%80%8A%E9%BE%99%E7%8E%8B%E7%BE%A4%E8%8A%B3%E5%AE%B4%E3%80%8B%E3%80%8A%E9%95%87%E5%9B%BD%E7%A5%9E%E9%BE%99%E3%80%8B%E7%AD%89%E4%BD%9C%E5%93%81%E3%80%82%22%2C%22leadId%22%3A%22663_1%22%2C%22bookId%22%3A%2241000107267%22%7D",
+            "isMore": 0,
+            "sex": 1,
+            "performNum": 14,
+            "introduction": "李进源，性别男，188cm，76kg，黑龙江佳木斯人，曾参演《小神医和四个绝色师姐》《少年天医》《逆袭归来，我是鉴宝大师》《龙王群芳宴》《镇国神龙》等作品。"
+          },
+          {
+            "performerId": "368_1",
+            "performerName": "朱湉亿",
+            "icon": "https://kyyimg.kkyd.cn/others/dzmfActorImage/date20250409/1744177084093.jpg",
+            "label": "主演4部剧",
+            "action": "hmjc://app.client?action=collection&param=%7B%22cover%22%3A%22https%3A%2F%2Fkyyimg.kkyd.cn%2Fothers%2FdzmfActorImage%2Fdate20250409%2F1744177084093.jpg%22%2C%22size%22%3A%22%E4%B8%BB%E6%BC%944%E9%83%A8%E5%89%A7%22%2C%22leadName%22%3A%22%E6%9C%B1%E6%B9%89%E4%BA%BF%22%2C%22leadSex%22%3A%222%22%2C%22bookName%22%3A%22%E9%A3%9E%E9%BE%99%E5%9C%A8%E5%A4%A9%22%2C%22introduction%22%3A%22%E6%9C%B1%E6%B9%89%E4%BA%BF%EF%BC%8C%E6%80%A7%E5%88%AB%E5%A5%B3%EF%BC%8C%E8%BA%AB%E9%AB%98169CM%EF%BC%8C%E4%BD%93%E9%87%8D52KG%EF%BC%8C%E5%A4%84%E5%A5%B3%E5%BA%A7%EF%BC%8C%E6%AF%95%E4%B8%9A%E4%BA%8E%E5%8C%97%E4%BA%AC%E7%94%B5%E5%BD%B1%E5%AD%A6%E9%99%A2%EF%BC%8C%E5%96%9C%E6%AC%A2%E8%BF%90%E5%8A%A8%EF%BC%8C%E9%9F%B3%E4%B9%90%EF%BC%8C%E6%9B%BE%E5%8F%82%E6%BC%94%E3%80%8A%E9%95%BF%E5%85%AC%E4%B8%BB%E5%9C%A8%E4%B8%8A%E3%80%8B%E3%80%81%E3%80%8A%E9%80%86%E9%BE%99%E3%80%8B%E3%80%8A%E9%97%AA%E5%A9%9A%E7%A7%9F%E4%B8%AA%E7%94%B7%E5%8F%8B%E5%9B%9E%E5%AE%B6%E8%BF%87%E5%B9%B4%E3%80%8B%E3%80%8A%E9%A3%9E%E9%BE%99%E5%9C%A8%E5%A4%A9%E3%80%8B%E7%AD%89%E4%BD%9C%E5%93%81%E3%80%82%22%2C%22leadId%22%3A%22368_1%22%2C%22bookId%22%3A%2241000107267%22%7D",
+            "isMore": 0,
+            "sex": 2,
+            "performNum": 4,
+            "introduction": "朱湉亿，性别女，身高169CM，体重52KG，处女座，毕业于北京电影学院，喜欢运动，音乐，曾参演《长公主在上》、《逆龙》《闪婚租个男友回家过年》《飞龙在天》等作品。"
+          }
+        ],
+        "marketStatus": 0,
+        "clickNum": 0,
+        "screenOrientation": 2,
+        "cpPartnerName": "版权方",
+        "cpPartnerId": 20091,
+        "playletPosition": 3,
+        "recPageNum": 1,
+        "isRecPlaylet": 1,
+        "fromType": 0,
+        "rankId": 0,
+        "coverBgColor": 4285163080,
+        "content": {
+          "mp4SwitchUrl": [
+            "https://mfvideo.cbread.cn/1e2043a550f52cc1453ad152fe727557/69fda610/61/7x6/76x2/762x7/76270100014/581722016_1/581722016.720p.narrowv3.mp4",
+            "https://txonlmfvideo.cbread.cn/61/7x6/76x2/762x7/76270100014/581722016_1/581722016.720p.narrowv3.mp4?t=69fda610&sign=9f99e66571d440d1a79a6700185c6e13",
+            "https://txonlmfvideo.cbread.cn/61/7x6/76x2/762x7/76270100014/581722016_1/581722016.720p.wzh26506V2.mp4?t=69fda610&sign=9f99e66571d440d1a79a6700185c6e13"
+          ],
+          "pressBeianhao": true,
+          "spriteImg": "https://dzzt-video.cbread.cn/61/7x6/76x2/762x7/76270100014/581722016_1/581722016_shot.vtt",
+          "mp4UrlRate": "720P",
+          "resolutionRates": [
+            {
+              "rate": "1080P",
+              "needVip": 1,
+              "describe": "高清"
+            },
+            {
+              "rate": "720P",
+              "needVip": 0,
+              "describe": "准高清"
+            },
+            {
+              "rate": "540P",
+              "needVip": 0,
+              "describe": "标清"
+            }
+          ],
+          "mp4Url": "https://mfvideo.cbread.cn/866f60e95b91cba75ec81f5cf50e1bb5/69fda610/61/7x6/76x2/762x7/76270100014/581722016_1/581722016.720p.wzh26506V2.mp4"
+        },
+        "firstCanFree": "1733365273154",
+        "recordNumber": "（点众）网微剧备字（2024）第4087号",
+        "videoLinkType": 1,
+        "existHighlightVideo": false,
+        "contentType": "4",
+        "mark": "",
+        "newShowTagMap": {
+          "权谋": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"权谋\",\"tagSource\":\"home\"}",
+          "情感": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"情感\",\"tagSource\":\"home\"}",
+          "古装": "hmjc://app.client?action=search&param={\"searchType\":\"2\",\"searchKey\":\"古装\",\"tagSource\":\"home\"}"
+        },
+        "postRating": "S+",
+        "discussInfo": "4402_21",
+        "inBookShelf": false
+      }
+    ],
+    "cardSwitch": 0,
+    "isVip": false,
+    "forceData": {},
+    "style": 0,
+    "introductionLines": 2,
+    "showCover": 0,
+    "showPerformer": 1,
+    "showFree": 1,
+    "showTags": 1,
+    "actorStyle": 1,
+    "actorJump": 0,
+    "appCacheRefresh": {
+      "status": 0,
+      "content": {
+        "mp4SwitchUrl": [
+          "https://mfvideo.cbread.cn/fe333833e36e7930def3d18cbcd09f8c/69fda610/61/6x4/64x4/644x7/64471100014/595369116_2/595369116.720p.narrowv3.mp4",
+          "https://txonlmfvideo.cbread.cn/61/6x4/64x4/644x7/64471100014/595369116_2/595369116.720p.narrowv3.mp4?t=69fda610&sign=da867122c9031fcc389b891089f0db30",
+          "https://txonlmfvideo.cbread.cn/61/6x4/64x4/644x7/64471100014/595369116_2/595369116.720p.wzh26506V2.mp4?t=69fda610&sign=da867122c9031fcc389b891089f0db30"
+        ],
+        "pressBeianhao": false,
+        "spriteImg": "https://dzzt-video.cbread.cn/61/6x4/64x4/644x7/64471100014/595369116_2/595369116_shot.vtt",
+        "mp4UrlRate": "720P",
+        "resolutionRates": [
+          {
+            "rate": "1080P",
+            "needVip": 1,
+            "describe": "高清"
+          },
+          {
+            "rate": "720P",
+            "needVip": 0,
+            "describe": "准高清"
+          },
+          {
+            "rate": "540P",
+            "needVip": 0,
+            "describe": "标清"
+          }
+        ],
+        "mp4Url": "https://mfvideo.cbread.cn/d18f36df41e5715f1a788f40554d1b03/69fda610/61/6x4/64x4/644x7/64471100014/595369116_2/595369116.720p.wzh26506V2.mp4"
+      }
+    }
+  },
+  "regTime": 1778147220,
+  "chTime": 1778147220,
+  "mode": 1
+}

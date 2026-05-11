@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "headers": {
+    "requestid": "G189M1042531048",
+    "content-type": "application/json;charset=UTF-8",
+    "date": "Mon, 11 May 2026 01:18:18 GMT",
+    "req-cost-time": "43",
+    "req-arrive-time": "1778462298781",
+    "resp-start-time": "1778462298825",
+    "x-envoy-upstream-service-time": "18",
+    "content-encoding": "gzip",
+    "vary": "Accept-Encoding",
+    "server": "istio-envoy",
+    "transfer-encoding": "chunked"
+  },
+  "body": "{\"timestamp\":1778462298823,\"code\":0,\"mchid\":\"HMJC1000004\",\"chid\":\"HMJC1000004\",\"userId\":2814651518,\"data\":{\"isInBookShelf\":false,\"maxChapter\":49,\"isVip\":false,\"status\":4},\"regTime\":1778147220,\"chTime\":1778147220,\"mode\":1}"
+}

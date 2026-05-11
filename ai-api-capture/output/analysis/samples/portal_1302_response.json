@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "headers": {
+    "requestid": "G200M1728236837",
+    "content-type": "application/json;charset=UTF-8",
+    "date": "Mon, 11 May 2026 01:18:17 GMT",
+    "req-cost-time": "33",
+    "req-arrive-time": "1778462297585",
+    "resp-start-time": "1778462297618",
+    "x-envoy-upstream-service-time": "5",
+    "content-encoding": "gzip",
+    "vary": "Accept-Encoding",
+    "server": "istio-envoy",
+    "transfer-encoding": "chunked"
+  },
+  "body": "{\"timestamp\":1778462297616,\"code\":0,\"mchid\":\"HMJC1000004\",\"chid\":\"HMJC1000004\",\"userId\":2814651518,\"data\":{\"status\":0,\"stageReadAwardList\":[{\"award\":10,\"status\":1,\"duration\":1,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":3,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":10,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":20,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":50,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":100,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":120,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":150,\"type\":0,\"awardType\":0},{\"award\":10,\"status\":1,\"duration\":180,\"type\":0,\"awardType\":0}],\"actualReadTimeSeconds\":0,\"recStageCoinTip\":1,\"isLogin\":0},\"regTime\":1778147220,\"chTime\":1778147220,\"mode\":1}"
+}

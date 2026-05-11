@@ -205,7 +205,7 @@ report.mumu.nie.netease.com, api.mumu.nie.netease.com
 - 接口之间的调用关系是什么？（列表中的 ID 是否被详情接口使用？）
 - 有没有签名机制？能否脱离 App 独立调用？
 
-**报告模板**（参考 `hema_api_report.md` 的格式）：
+**报告模板**（参考 [`hema_manju_api_report.md`](../output/analysis/hema_manju_api_report.md) 的格式）：
 
 ```markdown
 # {App名} API 接口报告
@@ -323,6 +323,76 @@ AI：信息完整，直接开始配置环境...
 用户：帮我抓某漫画App的作品列表、章节列表和阅读接口
 AI：收到。操作计划：首页浏览列表 → 点击作品看详情 → 点击章节看内容。确认？
 ```
+
+## 完整 Demo：河马漫剧
+
+以下是使用本 skill 分析河马漫剧 App 的完整流程记录，作为其他 AI 参考的 demo。
+
+### Demo 需求
+
+```
+用户：分析河马漫剧的首页+分页+详情页（需要能拿到剧集list+单集详情）
+```
+
+### Demo 流程
+
+**阶段 1：需求确认**
+```
+AI：收到，确认你的抓取目标：
+- App：河马漫剧
+- 目标数据：首页漫剧列表、分页加载、详情页剧集列表、单集详情
+- 操作页面：首页（剧场tab）、详情页
+```
+
+**阶段 2：环境准备**
+```bash
+# 连接 MuMu 模拟器
+adb connect 127.0.0.1:16384
+
+# 设置代理（10.0.2.2 是模拟器访问宿主机的地址）
+adb -s 127.0.0.1:16384 shell settings put global http_proxy 10.0.2.2:8080
+
+# 启动 mitmdump
+mitmdump --set block_global=false -s addons/capture_addon.py -p 8080
+```
+
+**阶段 3：用户操作**
+```
+AI：✅ 抓包环境已就绪！请在手机上操作河马漫剧 App：
+    1. 浏览首页漫剧列表
+    2. 向下滑动加载更多（触发分页）
+    3. 点击一部漫剧进入详情页
+
+用户：操作完了，最后点击的详情页短剧是"遇遇跑路"
+```
+
+**阶段 4：停止录制 + 清理**
+```bash
+# 停止 mitmdump（Ctrl+C）
+# 清理代理
+adb -s 127.0.0.1:16384 shell settings put global http_proxy :0
+```
+
+**阶段 5：AI 分析并撰写报告**
+
+AI 读取 `output/captures/` 目录中的 JSON 文件，识别出业务域名 `freevideo.zqqds.cn`，
+排除广告 SDK（快手、穿山甲、百度等），分析 3 个核心业务接口，撰写报告。
+
+### Demo 产出
+
+📁 完整报告：[`output/analysis/hema_manju_api_report.md`](../output/analysis/hema_manju_api_report.md)
+
+**识别到的核心接口**：
+
+| 接口 | 用途 | 关键数据 |
+|------|------|----------|
+| `/portal/1125` | 剧场分类列表 | 漫剧列表 + 播放量（coverBottomTips） + 分页（pageFlag/hasMore） |
+| `/portal/1131` | 短剧详情 | 剧集列表（chapterList 49集） + 当前集播放地址（mp4Url） |
+| `/portal/1139` | 切集播放 | 批量获取指定集播放地址 + 评论数 |
+
+**数据链路**：`/portal/1125`(bookId) → `/portal/1131`(bookId) → `/portal/1139`(bookId + chapterIds)
+
+**签名机制**：所有接口含 `sign` 动态签名 + `nonce` + `timestamp`，无法脱离 App 独立调用。
 
 ## 依赖
 

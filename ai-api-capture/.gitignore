@@ -6,9 +6,10 @@ __pycache__/
 dist/
 build/
 output/captures/
-output/analysis/
 output/generated/
 output/data/
+# 忽略 UUID 命名的 samples（代码自动生成的），只保留有意义命名的
+output/analysis/samples/[0-9a-f][0-9a-f][0-9a-f]*
 *.flow
 index.db
 .pytest_cache/

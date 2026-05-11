@@ -1,0 +1,18 @@
+{
+  "method": "POST",
+  "url": "http://freevideo.zqqds.cn/free-video-portal/portal/1125",
+  "headers": {
+    "alg": "HG45LKBS",
+    "sign": "Yj+NSxNcmcapi+kdWeo5M61oy0LFBoPofcZZuRX8z/Q=",
+    "datas": "{\"freeflow\":0,\"version\":\"3.2.2\",\"pname\":\"com.dz.hmjc\",\"channelCode\":\"HMJC1000004\",\"utdidTmp\":\"A20260507174656796JidVoe\",\"token\":\"\",\"utdid\":\"27f1421956093092d73e75dafd06ed82\",\"os\":\"android\",\"osv\":32,\"brand\":\"vivo\",\"model\":\"V2362A\",\"manu\":\"vivo\",\"userId\":\"2814651518\",\"launch\":\"shortcut\",\"mchid\":\"HMJC1000004\",\"nchid\":\"HMJC1000004\",\"session1\":\"ed7974df-37a2-4eb0-a697-e2fb968ac064\",\"session2\":\"ed7974df-37a2-4eb0-a697-e2fb968ac064\",\"startScene\":\"shortcut\",\"recSwitch\":false,\"installTime\":1778036642735,\"p\":53,\"nonce\":\"a172c79b486e4e0e9ff2f35175efedd7\",\"timeZone\":\"Asia/Shanghai\",\"timestamp\":\"1778462283406\",\"boxId\":\"B3Vrc7/KgNdUTu8yK0vuT6vXHIBZsebZfg0qEVdhAxupq7w8jKi5FRx0E3mkYrKley47+pOZWQOmdlbfhDGIXRA==\"}",
+    "wetruwtty": "mhdfiheowjfcslkjfwojo636",
+    "X-Request-ID": "e027837e-68b8-45fb-9859-77bfb569fe40, 3a8019f9-11f9-4c8d-a922-9e8ba13adfb3",
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": "256",
+    "Host": "freevideo.zqqds.cn",
+    "Connection": "Keep-Alive",
+    "Accept-Encoding": "gzip",
+    "User-Agent": "okhttp/4.10.0"
+  },
+  "body": "{\"recSwitch\":false,\"kingKongSwitch\":false,\"storePageId\":10002,\"audioBook\":1,\"channelGroupId\":\"78\",\"lastColumnStyle\":3,\"fromColumnId\":\"3\",\"pageFlag\":\"1\",\"theaterSubscriptSwitch\":true,\"needPlayLink\":0,\"isOldAgeMode\":false,\"resolutionRate\":\"720P\",\"preview\":1}"
+}
