@@ -173,7 +173,7 @@ class TrafficInterceptor:
                     data = json.load(f)
                 req = CapturedRequest.from_dict(data)
                 requests.append(req)
-            except (json.JSONDecodeError, KeyError, ValueError, OSError):
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
                 # 跳过无法解析的文件
                 continue
 

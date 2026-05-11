@@ -188,69 +188,87 @@ report.mumu.nie.netease.com, api.mumu.nie.netease.com
 - 只保留 Content-Type 含 "json" 的响应
 - 或 URL 路径含 /api/、/v1/、/v2/、/v3/、/portal/、/gateway/ 等已知 API 模式
 
-### 阶段 5：接口分析与报告生成
+### 阶段 5：AI 分析流量并撰写报告
 
-**通用接口识别逻辑**（基于响应结构模式，不绑定特定字段名）：
+**重要：报告由 AI 阅读 samples 文件后撰写，不是代码自动生成。**
 
-| 响应特征 | 接口类型 | 识别规则 |
-|----------|----------|----------|
-| 响应含数组，数组元素为结构化对象（含 id 字段 + 名称/标题类字段） | LIST（列表接口） | 数组长度 > 1，元素含 id + 至少一个 name/title/label 模式字段 |
-| 请求含分页参数，响应含分页标识 | LIST + PAGINATION（分页列表） | 请求含 page/offset/cursor/pageFlag，响应含 hasMore/total/nextPage |
-| 请求含 id 参数，响应字段数量明显多于列表元素 | DETAIL（详情接口） | 响应对象字段数 > 列表元素字段数的 1.5 倍 |
-| 响应含媒体 URL 模式 | MEDIA（媒体接口） | URL 含 .mp4/.m3u8/.mp3 或路径含 video/play/stream/media |
-| 响应含 config/settings/version 等配置字段 | CONFIG（配置接口） | - |
-| 响应为简单值或状态码 | AUX（辅助接口） | - |
+用户操作完成后，AI 执行以下步骤：
 
-**数据链路自动识别**：
-- 分析列表接口响应中的 ID 字段
-- 检查详情接口或媒体接口请求中是否使用了该 ID
-- 自动建立接口间的调用链（如 list → detail → media）
+1. **读取 captures 目录**：`output/captures/*.json`，每个文件是一个请求-响应对
+2. **识别业务域名**：排除广告 SDK（快手、穿山甲、百度等），找到 App 自身的业务域名
+3. **逐个阅读业务接口的响应体**：理解每个接口返回了什么数据
+4. **撰写高质量报告**：参考下方报告模板
 
-**参数分类**（通用规则）：
+**AI 分析时的思考框架**：
+- 这个接口返回的是什么数据？（列表？详情？播放地址？配置？）
+- 响应中哪些字段是用户关心的？（标题、封面、播放量、章节列表等）
+- 接口之间的调用关系是什么？（列表中的 ID 是否被详情接口使用？）
+- 有没有签名机制？能否脱离 App 独立调用？
 
-| 类型 | 判断规则 |
-|------|----------|
-| 静态参数 | version, platform, os, brand, model, channel, appVersion 等固定值 |
-| 会话参数 | token, userId, session, uid, authorization 等用户身份标识 |
-| 动态参数 | sign, nonce, timestamp, signature 等每次请求值不同的参数 |
+**报告模板**（参考 `hema_api_report.md` 的格式）：
 
-**签名机制识别**：
-- 如果请求含 sign/signature + nonce + timestamp → 有动态签名
-- 结论：无法脱离 App 独立调用，需通过回放方式采集
+```markdown
+# {App名} API 接口报告
 
-**目标匹配**：
-- 结合用户在阶段 1 提供的 target_data，标注哪些接口与用户目标最相关
-- 如果未找到匹配目标的接口，明确告知用户并列出所有已识别的业务接口
+## 数据链路
 
-### 阶段 6：报告输出
+（用 ASCII 图展示接口间的调用关系，标注每个接口返回的关键数据）
+
+## 关键字段对照
+
+（表格：字段名 | 含义 | 所在接口 | 示例值）
+
+## 接口概览
+
+（表格：# | 接口路径 | 用途（中文描述） | 角色 | 请求次数）
+
+## 每个接口详情
+
+### N. `/path/to/endpoint` — 中文用途说明
+
+> 一句话描述这个接口干什么的
+
+**方法**: POST/GET
+**域名**: xxx.com
+**调用次数**: N
+
+#### 请求参数
+（表格：参数 | 示例值 | 说明）
+
+#### 响应结构
+📁 完整响应: [filename.json](samples/filename.json)
+
+**data 字段结构**:
+（展开 data 下的 key 列表，标注类型和含义）
+
+**关键数据示例**（如 dataList[0] 或 chapterList[0] 的字段展开）
+
+#### cURL
+（完整可执行的 cURL 命令）
+```
+
+**报告质量要求**：
+- 每个接口必须有**中文用途说明**（不能只写 "detail" "media"）
+- 必须展开响应结构，展示关键字段和含义
+- 列表接口必须展示第一条数据的完整字段
+- 必须标注哪些字段是用户关心的数据（如播放量、章节列表等）
+- 数据链路图必须清晰展示接口间的调用关系和数据流向
 
 **输出结构**：
 ```
 output/analysis/
-├── {app_name}_api_report.md      # 接口报告（Markdown）
+├── {app_name}_api_report.md      # AI 撰写的接口报告
 └── samples/
-    ├── {endpoint_1}_request.json    # 请求样本
-    ├── {endpoint_1}_response.json   # 响应样本（完整 JSON）
-    ├── {endpoint_2}_request.json
-    └── {endpoint_2}_response.json
+    ├── portal_1125_request.json
+    ├── portal_1125_response.json
+    ├── portal_1131_request.json
+    ├── portal_1131_response.json
+    └── ...
 ```
 
-**报告内容**：
-1. **抓取目标摘要**：用户的目标数据描述和操作页面
-2. **数据链路图**：接口间的调用关系（如 list → detail → media）
-3. **接口概览表**：路径、用途、类型、调用次数、是否匹配用户目标
-4. **每个接口详情**：
-   - 请求参数表（参数名 + 类型 + 示例值）
-   - 响应结构概览（data 字段的 key 列表和类型）
-   - 列表数据的第一条记录字段（展示数据结构）
-   - 完整响应引用：`📁 [{endpoint}_response.json](samples/{endpoint}_response.json)`
-   - cURL 命令（可直接复制执行）
-5. **签名机制说明**
-6. **采集策略建议**
-
-**报告中不内联大段 JSON**，所有原始数据保存到 `samples/` 目录。
-
-**报告用途**：该报告是给其他 AI 或开发者使用的，需要格式清晰、结构化程度高，便于 AI 解析和理解接口结构。
+**samples 文件命名规则**：
+- 使用接口路径中有意义的部分命名（如 `portal_1125`），不要用 UUID
+- 每个接口保存 `_request.json` 和 `_response.json` 两个文件
 
 ## 暂停点
 
@@ -266,12 +284,11 @@ output/analysis/
 
 ### 暂停点 3：操作完成确认
 **时机**：用户告知操作完成后
-**展示**：捕获到的请求数量统计
-**AI 动作**：开始分析流量
+**AI 动作**：停止 mitmdump，清理代理，开始读取 samples 分析
 
 ### 暂停点 4：报告交付
-**时机**：阶段 6 完成后
-**展示**：报告摘要 + 文件路径
+**时机**：阶段 5 完成后
+**展示**：完整的接口分析报告（Markdown）
 **用户决策**：确认完成 / 要求补充分析（如"详情接口没抓到，再操作一次"）
 
 ## 约束与限制
