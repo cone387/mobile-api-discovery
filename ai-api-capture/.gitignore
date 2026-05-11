@@ -5,12 +5,24 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# 输出目录（保留 .gitkeep 和分析报告）
 output/captures/
 output/generated/
 output/data/
+output/test_captures/
 # 忽略 UUID 命名的 samples（代码自动生成的），只保留有意义命名的
 output/analysis/samples/[0-9a-f][0-9a-f][0-9a-f]*
+
+# mitmproxy 流量文件
 *.flow
+
+# 数据库
 index.db
+
+# 测试缓存
 .pytest_cache/
 .hypothesis/
+
+# 开发用的测试脚本（不属于核心功能）
+hema_tests/
