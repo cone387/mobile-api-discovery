@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "ai-api-capture"
-version = "4.0.0"
+version = "5.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

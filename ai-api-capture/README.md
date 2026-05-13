@@ -24,39 +24,46 @@ AI 辅助的移动端接口抓取与分析工具。通过 mitmproxy 抓包 + AI 
 - adb (Android SDK Platform Tools)
 - 已连接的 Android 设备（真机或模拟器，如 MuMu）
 
-### 方式 1：作为 Kiro Skill 使用（推荐）
+### 方式 1：一键安装（推荐）
 
-如果你使用 [Kiro](https://kiro.dev) 开发环境，可以直接将本项目作为 AI Skill 使用：
+使用 [Skills CLI](https://github.com/vercel-labs/skills) 一键安装，支持 Claude Code、Codex、Kiro 等 30+ 个 AI agent：
 
 ```bash
-# 1. 克隆项目
-git clone <repository-url>
-cd ai-api-capture
+# 安装到当前项目（所有支持的 agent）
+npx skills add cone387/mobile-api-discovery --skill ai-api-capture
 
-# 2. 安装依赖
-uv sync
+# 安装到指定 agent
+npx skills add cone387/mobile-api-discovery --skill ai-api-capture -a claude-code
+npx skills add cone387/mobile-api-discovery --skill ai-api-capture -a kiro
 
-# 3. 将 skill 文件复制到 Kiro skills 目录
-# 工作区级别（仅当前项目生效）：
-cp skill/ai-api-capture.md .kiro/skills/
-
-# 或全局级别（所有项目生效）：
-cp skill/ai-api-capture.md ~/.kiro/skills/
+# 全局安装（跨项目可用）
+npx skills add cone387/mobile-api-discovery --skill ai-api-capture -g
 ```
 
-安装完成后，在 Kiro 中直接用自然语言触发：
+### 方式 2：手动安装到 Kiro
+
+```bash
+# 方法 A：直接下载 skill 文件
+curl -o ~/.kiro/skills/ai-api-capture.md https://raw.githubusercontent.com/cone387/mobile-api-discovery/master/skills/ai-api-capture/SKILL.md
+
+# 方法 B：克隆后复制
+git clone https://github.com/cone387/mobile-api-discovery.git
+cp mobile-api-discovery/skills/ai-api-capture/SKILL.md ~/.kiro/skills/ai-api-capture.md
+```
+
+安装完成后，在 AI agent 中直接用自然语言触发：
 ```
 帮我抓取某App的首页列表接口和详情接口
 ```
 
 AI 会自动激活本 Skill 并引导完成整个流程。
 
-### 方式 2：作为 Python 包安装
+### 方式 3：作为 Python 包安装（开发者）
 
 ```bash
 # 克隆项目
-git clone <repository-url>
-cd ai-api-capture
+git clone https://github.com/cone387/mobile-api-discovery.git
+cd mobile-api-discovery/ai-api-capture
 
 # 使用 uv 安装（推荐）
 uv sync

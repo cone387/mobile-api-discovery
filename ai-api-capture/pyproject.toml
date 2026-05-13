@@ -9,6 +9,10 @@ description = "AI 辅助的移动端接口抓取与分析工具"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/cone387/mobile-api-discovery"
+Repository = "https://github.com/cone387/mobile-api-discovery"
 dependencies = [
     "requests>=2.31.0",
     "httpx>=0.25.0",
