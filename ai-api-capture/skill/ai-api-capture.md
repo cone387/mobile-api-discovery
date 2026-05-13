@@ -80,7 +80,7 @@ AI 在开始前自动检查环境，**不需要用户操心**：
 
 ```
 检查项：
-1. mitmproxy 是否已安装 → 未安装则提供: pip install mitmproxy
+1. mitmproxy 是否已安装 → 未安装则自动安装（优先使用虚拟环境）
 2. adb 是否可用 → 未安装则提示安装 Android SDK Platform Tools
 3. 工作目录是否存在 → 自动创建 output/captures 目录
 4. capture_addon.py 是否存在 → 不存在则自动生成（见内嵌脚本章节）
@@ -98,10 +98,31 @@ adb version
 adb devices
 ```
 
-**如果 mitmproxy 未安装**，AI 应执行：
+**如果 mitmproxy 未安装，按优先级选择安装方式**：
+
 ```bash
+# 优先级 1：当前目录有 pyproject.toml（项目环境）
+# → 添加到项目依赖，通过 uv run 执行
+uv add mitmproxy
+# 后续启动命令变为：uv run mitmdump ...
+
+# 优先级 2：系统有 uv 但无项目上下文
+# → 用 uvx 临时运行（零安装，自动隔离）
+uvx mitmdump --version
+# 后续启动命令变为：uvx mitmdump ...
+
+# 优先级 3：系统有 pipx
+# → 隔离安装为全局 CLI 工具
+pipx install mitmproxy
+
+# 优先级 4：以上都不可用（兜底）
 pip install mitmproxy
 ```
+
+**mitmdump 启动命令的选择逻辑**：
+- 有 `pyproject.toml` 且 mitmproxy 在依赖中 → `uv run mitmdump ...`
+- 有 uv 但无项目 → `uvx mitmdump ...`
+- mitmdump 已在 PATH 中 → 直接 `mitmdump ...`
 
 ### 阶段 1：需求收集与引导
 
@@ -161,7 +182,10 @@ AI 自动完成以下步骤：
 
 5. **启动 mitmdump + 过滤脚本**
    ```bash
-   mitmdump --set block_global=false -s capture_addon.py -p 8080
+   # 根据阶段 0 的检测结果选择对应命令：
+   # 项目环境：uv run mitmdump --set block_global=false -s capture_addon.py -p 8080
+   # uvx 方式：uvx mitmdump --set block_global=false -s capture_addon.py -p 8080
+   # PATH 可用：mitmdump --set block_global=false -s capture_addon.py -p 8080
    ```
 
 6. **通知用户**（基于需求收集阶段的信息定制操作指引）
@@ -511,10 +535,13 @@ addons = [CaptureAddon()]
 **AI 在阶段 0 执行以下检查（按顺序，遇到问题立即修复）：**
 
 ```bash
-# 1. 检查 mitmproxy
+# 1. 检查 mitmproxy（按优先级尝试）
 mitmdump --version
-# 如果失败：
-pip install mitmproxy
+# 如果失败，检测环境并安装：
+#   有 pyproject.toml → uv add mitmproxy（项目虚拟环境）
+#   有 uv 无项目     → 后续用 uvx mitmdump 运行（无需安装）
+#   有 pipx          → pipx install mitmproxy
+#   兜底             → pip install mitmproxy
 
 # 2. 检查 adb
 adb version
@@ -576,6 +603,7 @@ AI：收到。操作计划：首页浏览列表 → 点击作品看详情 → �
 mitmdump --version  # ✅ mitmproxy 10.4.2
 adb devices         # ✅ 127.0.0.1:16384 device
 # capture_addon.py 不存在 → 自动生成
+# 检测到 pyproject.toml → 后续使用 uv run mitmdump
 ```
 
 **阶段 1：需求确认**
@@ -591,8 +619,8 @@ AI：收到，确认你的抓取目标：
 # 设置代理（10.0.2.2 是模拟器访问宿主机的地址）
 adb -s 127.0.0.1:16384 shell settings put global http_proxy 10.0.2.2:8080
 
-# 启动 mitmdump（使用自动生成的 addon）
-mitmdump --set block_global=false -s capture_addon.py -p 8080
+# 启动 mitmdump（使用自动生成的 addon，通过项目虚拟环境运行）
+uv run mitmdump --set block_global=false -s capture_addon.py -p 8080
 ```
 
 **阶段 3：用户操作**
@@ -633,7 +661,7 @@ AI 读取 `output/captures/` 目录中的 JSON 文件，识别出业务域名 `f
 
 ## 依赖
 
-| 工具 | 用途 | 安装方式 |
+| 工具 | 用途 | 安装方式（按优先级） |
 |------|------|----------|
-| mitmproxy | HTTPS 流量拦截 | `pip install mitmproxy` |
+| mitmproxy | HTTPS 流量拦截 | `uv add mitmproxy`（项目）/ `uvx mitmdump`（临时）/ `pipx install mitmproxy` |
 | adb | 设备连接/代理设置 | Android SDK 或模拟器自带 |
