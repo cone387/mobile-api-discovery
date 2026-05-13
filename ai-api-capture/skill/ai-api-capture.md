@@ -1,7 +1,7 @@
 ---
 name: AI API Capture
 description: 通用的 AI 辅助移动端接口抓取与分析 skill。AI 引导用户明确抓取目标，自动配置抓包环境，用户手动操作 App 触发接口，AI 自动过滤、分析并生成结构化接口报告。适用于任意 App。
-version: 4.0.0
+version: 5.0.0
 keywords:
   - api
   - capture
@@ -37,6 +37,16 @@ dependencies:
 - 本 skill 是通用方案，适用于任意 App 的接口抓取，不绑定特定 App 或特定字段名
 - 本 skill 不使用 Mobile MCP 操控设备，全程由用户手动操作 App
 - AI 只负责：需求引导、环境准备、流量分析
+- **本 skill 完全自包含**：所有代码和脚本在运行时动态生成，无需额外安装
+
+## 安装
+
+**零依赖安装**：将本文件复制到 `~/.kiro/skills/ai-api-capture.md` 即可。
+
+**系统要求**（AI 会在运行时自动检查并引导安装）：
+- Python 3.8+（用于运行 mitmproxy）
+- mitmproxy（AI 会自动检查，未安装时提供安装命令）
+- adb（Android 模拟器通常自带）
 
 ## 触发条件
 
@@ -63,6 +73,35 @@ dependencies:
 **注意**：如果用户未提供完整参数，AI 应主动引导用户补充。
 
 ## 执行流程
+
+### 阶段 0：环境自检（自动执行）
+
+AI 在开始前自动检查环境，**不需要用户操心**：
+
+```
+检查项：
+1. mitmproxy 是否已安装 → 未安装则提供: pip install mitmproxy
+2. adb 是否可用 → 未安装则提示安装 Android SDK Platform Tools
+3. 工作目录是否存在 → 自动创建 output/captures 目录
+4. capture_addon.py 是否存在 → 不存在则自动生成（见内嵌脚本章节）
+```
+
+**自检命令**：
+```bash
+# 检查 mitmproxy
+mitmdump --version
+
+# 检查 adb
+adb version
+
+# 检查设备连接
+adb devices
+```
+
+**如果 mitmproxy 未安装**，AI 应执行：
+```bash
+pip install mitmproxy
+```
 
 ### 阶段 1：需求收集与引导
 
@@ -100,29 +139,32 @@ AI 在开始抓包前，先确保用户的需求足够清晰：
 
 AI 自动完成以下步骤：
 
-1. **检查设备连接**
+1. **生成 capture_addon.py**（如果不存在）
+   - 将「内嵌脚本」章节的代码写入工作目录
+
+2. **检查设备连接**
    ```bash
    adb devices  # 确认设备在线
    ```
 
-2. **安装系统级 CA 证书**（如果需要 HTTPS 解密）
+3. **安装系统级 CA 证书**（如果需要 HTTPS 解密）
    ```bash
    # 通过 adb 使用 tmpfs overlay 方式安装到系统证书目录
    adb shell "su 0 mount -t tmpfs tmpfs /system/etc/security/cacerts"
    adb shell "cp /data/local/tmp/certs/* /system/etc/security/cacerts/"
    ```
 
-3. **设置设备代理**
+4. **设置设备代理**
    ```bash
    adb shell settings put global http_proxy <host_ip>:8080
    ```
 
-4. **启动 mitmdump + 过滤脚本**
+5. **启动 mitmdump + 过滤脚本**
    ```bash
-   mitmdump --set block_global=false -s addons/capture_addon.py
+   mitmdump --set block_global=false -s capture_addon.py -p 8080
    ```
 
-5. **通知用户**（基于需求收集阶段的信息定制操作指引）
+6. **通知用户**（基于需求收集阶段的信息定制操作指引）
    ```
    ✅ 抓包环境已就绪！
    - 代理已设置：<host_ip>:8080
@@ -205,7 +247,7 @@ report.mumu.nie.netease.com, api.mumu.nie.netease.com
 - 接口之间的调用关系是什么？（列表中的 ID 是否被详情接口使用？）
 - 有没有签名机制？能否脱离 App 独立调用？
 
-**报告模板**（参考 [`hema_manju_api_report.md`](../output/analysis/hema_manju_api_report.md) 的格式）：
+**报告模板**：
 
 ```markdown
 # {App名} API 接口报告
@@ -291,6 +333,199 @@ output/analysis/
 **展示**：完整的接口分析报告（Markdown）
 **用户决策**：确认完成 / 要求补充分析（如"详情接口没抓到，再操作一次"）
 
+## 内嵌脚本：capture_addon.py
+
+**AI 在阶段 2 开始时，如果工作目录下不存在 `capture_addon.py`，应自动创建此文件：**
+
+```python
+"""mitmproxy addon - 4 层过滤 + JSON 存储（自包含，无外部依赖）"""
+
+import json
+import os
+import uuid
+from datetime import datetime
+from urllib.parse import urlparse
+
+from mitmproxy import http, tls
+
+# === 过滤规则 ===
+
+CONTENT_TYPE_BLACKLIST = [
+    "image/", "font/", "video/", "audio/", "text/css", "application/javascript",
+]
+
+DOMAIN_BLACKLIST = [
+    "analytics.oceanengine.com", "sss.umeng.com", "tracking.miui.com",
+    "pro.bugly.qq.com", "bugly.qq.com",
+    "pbaccess.video.qq.com", "amdcopen.m.taobao.com",
+    "gepush.com", "sdk-open-phone.getui.com",
+    "tingyun.com", "wkdcm1.tingyun.com",
+    "203.107.1.1", "cbsipv4.shuzilm.cn",
+    "mssdk", "polaris", "gecko.zijieapi.com",
+    "report.mumu.nie.netease.com", "api.mumu.nie.netease.com",
+]
+
+PATH_BLACKLIST = [
+    "/sdk/app/", "/reportBatchData", "/upload-json", "/api/v2/al",
+    "/api/v1/attribute", "/api/collection", "/getMobileRedirectHost",
+    "/initMobileApp", "/track/v4",
+]
+
+CONTENT_TYPE_WHITELIST = ["json"]
+API_PATH_PATTERNS = ["/api/", "/v1/", "/v2/", "/v3/", "/portal/", "/gateway/"]
+
+# === 配置（通过环境变量） ===
+
+STORAGE_PATH = os.environ.get("CAPTURE_STORAGE_PATH", "./output/captures")
+USER_WHITELIST = os.environ.get("CAPTURE_USER_DOMAIN_WHITELIST", "")
+USER_BLACKLIST = os.environ.get("CAPTURE_USER_DOMAIN_BLACKLIST", "")
+
+user_domain_whitelist = [d.strip() for d in USER_WHITELIST.split(",") if d.strip()] or None
+user_domain_blacklist = [d.strip() for d in USER_BLACKLIST.split(",") if d.strip()] or None
+
+os.makedirs(STORAGE_PATH, exist_ok=True)
+
+
+# === 工具函数 ===
+
+def domain_matches(hostname, domain_list):
+    if not hostname:
+        return False
+    for domain in domain_list:
+        if hostname == domain or hostname.endswith("." + domain):
+            return True
+    return False
+
+
+def should_capture(flow):
+    parsed = urlparse(flow.request.pretty_url)
+    hostname = parsed.hostname or ""
+    path = parsed.path or ""
+    ct = ""
+    if flow.response and flow.response.headers:
+        ct = flow.response.headers.get("content-type", "").lower()
+
+    # 用户域名白名单
+    if user_domain_whitelist:
+        if not domain_matches(hostname, user_domain_whitelist):
+            return False
+
+    # 用户域名黑名单
+    if user_domain_blacklist:
+        if domain_matches(hostname, user_domain_blacklist):
+            return False
+
+    # 第 1 层：静态资源
+    for bl in CONTENT_TYPE_BLACKLIST:
+        if bl.lower() in ct:
+            return False
+
+    # 第 2 层：域名黑名单
+    if domain_matches(hostname, DOMAIN_BLACKLIST):
+        return False
+
+    # 第 3 层：路径黑名单
+    for bp in PATH_BLACKLIST:
+        if bp in path:
+            return False
+
+    # 第 4 层：API 白名单
+    for wl in CONTENT_TYPE_WHITELIST:
+        if wl.lower() in ct:
+            return True
+    for pattern in API_PATH_PATTERNS:
+        if pattern in path:
+            return True
+
+    return False
+
+
+# === mitmproxy Addon ===
+
+class CaptureAddon:
+    def response(self, flow: http.HTTPFlow):
+        if should_capture(flow):
+            self._save(flow)
+
+    def tls_failed_client_hello(self, client_hello: tls.ClientHelloData):
+        sni = "unknown"
+        if client_hello.context and client_hello.context.client:
+            sni = client_hello.context.client.sni or "unknown"
+        record = {
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "method": "CONNECT",
+            "url": f"https://{sni}/",
+            "headers": {},
+            "body": None,
+            "response_status": 0,
+            "response_headers": {},
+            "response_body": None,
+            "is_decrypted": False,
+        }
+        self._write(record)
+
+    def _save(self, flow: http.HTTPFlow):
+        req_body = None
+        if flow.request.content:
+            try:
+                req_body = flow.request.content.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        resp_body = None
+        if flow.response and flow.response.content:
+            try:
+                resp_body = flow.response.content.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        record = {
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.now().isoformat(),
+            "method": flow.request.method,
+            "url": flow.request.pretty_url,
+            "headers": dict(flow.request.headers),
+            "body": req_body,
+            "response_status": flow.response.status_code if flow.response else 0,
+            "response_headers": dict(flow.response.headers) if flow.response else {},
+            "response_body": resp_body,
+            "is_decrypted": True,
+        }
+        self._write(record)
+
+    def _write(self, record):
+        filepath = os.path.join(STORAGE_PATH, f"{record['id']}.json")
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+
+addons = [CaptureAddon()]
+```
+
+## 内嵌脚本：环境自检
+
+**AI 在阶段 0 执行以下检查（按顺序，遇到问题立即修复）：**
+
+```bash
+# 1. 检查 mitmproxy
+mitmdump --version
+# 如果失败：
+pip install mitmproxy
+
+# 2. 检查 adb
+adb version
+# 如果失败：提示用户安装 Android SDK Platform Tools 或使用模拟器自带的 adb
+
+# 3. 创建输出目录
+mkdir -p output/captures output/analysis/samples
+
+# 4. 如果 capture_addon.py 不存在，从上方「内嵌脚本」章节生成
+```
+
 ## 约束与限制
 
 - 需要真实设备或模拟器（MuMu、Android Studio Emulator 等）通过 adb 连接
@@ -336,6 +571,13 @@ AI：收到。操作计划：首页浏览列表 → 点击作品看详情 → �
 
 ### Demo 流程
 
+**阶段 0：环境自检**
+```bash
+mitmdump --version  # ✅ mitmproxy 10.4.2
+adb devices         # ✅ 127.0.0.1:16384 device
+# capture_addon.py 不存在 → 自动生成
+```
+
 **阶段 1：需求确认**
 ```
 AI：收到，确认你的抓取目标：
@@ -346,14 +588,11 @@ AI：收到，确认你的抓取目标：
 
 **阶段 2：环境准备**
 ```bash
-# 连接 MuMu 模拟器
-adb connect 127.0.0.1:16384
-
 # 设置代理（10.0.2.2 是模拟器访问宿主机的地址）
 adb -s 127.0.0.1:16384 shell settings put global http_proxy 10.0.2.2:8080
 
-# 启动 mitmdump
-mitmdump --set block_global=false -s addons/capture_addon.py -p 8080
+# 启动 mitmdump（使用自动生成的 addon）
+mitmdump --set block_global=false -s capture_addon.py -p 8080
 ```
 
 **阶段 3：用户操作**
@@ -380,8 +619,6 @@ AI 读取 `output/captures/` 目录中的 JSON 文件，识别出业务域名 `f
 
 ### Demo 产出
 
-📁 完整报告：[`output/analysis/hema_manju_api_report.md`](../output/analysis/hema_manju_api_report.md)
-
 **识别到的核心接口**：
 
 | 接口 | 用途 | 关键数据 |
@@ -396,7 +633,7 @@ AI 读取 `output/captures/` 目录中的 JSON 文件，识别出业务域名 `f
 
 ## 依赖
 
-| 工具 | 用途 | 安装 |
-|------|------|------|
-| mitmproxy | HTTPS 流量拦截 | `uv add mitmproxy` |
-| adb | 设备连接/证书安装/代理设置 | Android SDK 或模拟器自带 |
+| 工具 | 用途 | 安装方式 |
+|------|------|----------|
+| mitmproxy | HTTPS 流量拦截 | `pip install mitmproxy` |
+| adb | 设备连接/代理设置 | Android SDK 或模拟器自带 |

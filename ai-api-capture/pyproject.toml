@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-api-capture"
-version = "4.0.0"
+version = "5.0.0"
 description = "AI 辅助的移动端接口抓取与分析工具"
 readme = "README.md"
 license = "MIT"
